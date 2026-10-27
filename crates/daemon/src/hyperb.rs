@@ -46,8 +46,12 @@ impl Identity {
         match std::fs::read_to_string(path) {
             Ok(s) => {
                 let mut secret = [0u8; 32];
-                hex::decode_to_slice(s.trim(), &mut secret)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {e}", path.display())))?;
+                hex::decode_to_slice(s.trim(), &mut secret).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: {e}", path.display()),
+                    )
+                })?;
                 Ok(Identity(SigningKey::from_bytes(&secret)))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -75,7 +79,8 @@ impl PublicKey {
     /// Whether `signature` (hex) is this key's signature of `msg`.
     pub fn verify(&self, msg: &[u8], signature: &str) -> bool {
         let mut sig = [0u8; 64];
-        hex::decode_to_slice(signature.trim(), &mut sig).is_ok() && self.0.verify(msg, &Signature::from_bytes(&sig)).is_ok()
+        hex::decode_to_slice(signature.trim(), &mut sig).is_ok()
+            && self.0.verify(msg, &Signature::from_bytes(&sig)).is_ok()
     }
 }
 
@@ -91,7 +96,9 @@ impl FromStr for PublicKey {
     fn from_str(s: &str) -> Result<Self, String> {
         let mut bytes = [0u8; 32];
         hex::decode_to_slice(s.trim(), &mut bytes).map_err(|e| e.to_string())?;
-        VerifyingKey::from_bytes(&bytes).map(PublicKey).map_err(|_| "not an ed25519 public key".into())
+        VerifyingKey::from_bytes(&bytes)
+            .map(PublicKey)
+            .map_err(|_| "not an ed25519 public key".into())
     }
 }
 
@@ -102,8 +109,13 @@ mod tests {
 
     #[test]
     fn verifies_signatures() {
-        let id = Identity::load_or_create(&std::env::temp_dir().join(format!("grassline-id-{}", std::process::id()))).unwrap();
-        let key: PublicKey = hex::encode(id.0.verifying_key().as_bytes()).parse().unwrap();
+        let id = Identity::load_or_create(
+            &std::env::temp_dir().join(format!("grassline-id-{}", std::process::id())),
+        )
+        .unwrap();
+        let key: PublicKey = hex::encode(id.0.verifying_key().as_bytes())
+            .parse()
+            .unwrap();
         let sig = hex::encode(id.0.sign(b"s").to_bytes());
         assert!(key.verify(b"s", &sig));
         assert!(!key.verify(b"t", &sig));

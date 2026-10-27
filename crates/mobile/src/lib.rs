@@ -5,7 +5,9 @@
 
 mod jni_bridge;
 
-use grassline_proto::{parse, parse_ticket, to_line, ClientMsg, Message, Project, ServerMsg, SessionInfo, ALPN};
+use grassline_proto::{
+    parse, parse_ticket, to_line, ClientMsg, Message, Project, ServerMsg, SessionInfo, ALPN,
+};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -80,7 +82,10 @@ impl Controller {
     pub fn new(dir: &Path) -> std::io::Result<Controller> {
         std::fs::create_dir_all(dir)?;
         let secret = load_secret(&dir.join("identity"))?;
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
         let c = Controller {
             dir: dir.into(),
             secret,
@@ -112,7 +117,9 @@ impl Controller {
     /// Pairs with the daemon a ticket names (see `grassline_proto::ticket`).
     pub fn pair(&self, ticket: &str, device_name: &str) -> Result<(), String> {
         let (endpoint, token) = parse_ticket(ticket).ok_or("that is not a pairing code")?;
-        endpoint.parse::<EndpointId>().map_err(|_| "that is not a pairing code")?;
+        endpoint
+            .parse::<EndpointId>()
+            .map_err(|_| "that is not a pairing code")?;
         self.connect(endpoint.into(), Some((token.into(), device_name.into())));
         Ok(())
     }
@@ -125,7 +132,12 @@ impl Controller {
         let _ = std::fs::remove_file(self.dir.join("daemon.json"));
         *self.shared.out.lock().unwrap() = None;
         self.shared.opened.lock().unwrap().clear();
-        self.shared.edit(|s| *s = State { version: s.version, ..Default::default() });
+        self.shared.edit(|s| {
+            *s = State {
+                version: s.version,
+                ..Default::default()
+            }
+        });
         self.shared.status(Status::Unpaired);
     }
 
@@ -135,7 +147,9 @@ impl Controller {
         }
         self.shared.status(Status::Connecting);
         let (shared, secret, dir) = (self.shared.clone(), self.secret.clone(), self.dir.clone());
-        let task = self.rt.spawn(connection_loop(shared, secret, dir, endpoint, pairing));
+        let task = self
+            .rt
+            .spawn(connection_loop(shared, secret, dir, endpoint, pairing));
         *self.conn_task.lock().unwrap() = Some(task);
     }
 
@@ -150,7 +164,10 @@ impl Controller {
     }
 
     pub fn create(&self, project: &str) {
-        self.send(ClientMsg::Create { project: project.into(), provider: None });
+        self.send(ClientMsg::Create {
+            project: project.into(),
+            provider: None,
+        });
     }
 
     pub fn open(&self, id: &str) {
@@ -159,7 +176,10 @@ impl Controller {
     }
 
     pub fn send_text(&self, id: &str, text: &str) {
-        self.send(ClientMsg::Send { id: id.into(), text: text.into() });
+        self.send(ClientMsg::Send {
+            id: id.into(),
+            text: text.into(),
+        });
     }
 
     pub fn stop(&self, id: &str) {
@@ -188,7 +208,11 @@ impl Controller {
     /// the current version.
     pub fn wait(&self, seen: u64, timeout: Duration) -> u64 {
         let s = self.shared.state.lock().unwrap();
-        let (s, _) = self.shared.changed.wait_timeout_while(s, timeout, |s| s.version <= seen).unwrap();
+        let (s, _) = self
+            .shared
+            .changed
+            .wait_timeout_while(s, timeout, |s| s.version <= seen)
+            .unwrap();
         s.version
     }
 }
@@ -214,8 +238,14 @@ async fn connection_loop(
     endpoint_id: String,
     mut pairing: Option<(String, String)>,
 ) {
-    let Ok(id) = endpoint_id.parse::<EndpointId>() else { return };
-    let endpoint = match Endpoint::builder(presets::N0).secret_key(secret).bind().await {
+    let Ok(id) = endpoint_id.parse::<EndpointId>() else {
+        return;
+    };
+    let endpoint = match Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .bind()
+        .await
+    {
         Ok(e) => e,
         Err(e) => return shared.status(Status::Offline(e.to_string())),
     };
@@ -310,7 +340,8 @@ fn apply(shared: &Shared, msg: ServerMsg) {
         ServerMsg::Session { info } => {
             s.sessions.retain(|i| i.id != info.id);
             s.sessions.push(info);
-            s.sessions.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
+            s.sessions
+                .sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
         }
         ServerMsg::History { id, messages } => {
             s.messages.insert(id, messages);
@@ -327,4 +358,3 @@ fn apply(shared: &Shared, msg: ServerMsg) {
         ServerMsg::Error { message } => s.error = Some(message),
     });
 }
-

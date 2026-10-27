@@ -28,7 +28,11 @@ pub struct Admin {
 }
 
 fn sig(a: &Action, path: &str) -> String {
-    a.signal(path).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    a.signal(path)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 fn ago(ms: u64) -> String {
@@ -45,16 +49,40 @@ fn ago(ms: u64) -> String {
 fn add_row(out: &mut Outbox, parent: &str, id: &str, placeholder: &str, label: &str, action: &str) {
     let row_id = format!("{id}-row");
     out.element(row(row_id.as_str()).parent(parent));
-    out.element(input(id).parent(row_id.as_str()).placeholder(placeholder).bind(id).on_submit(Handler::action(action)));
-    out.element(button(format!("{id}-go")).parent(row_id.as_str()).variant("primary").label(label).on_press(Handler::action(action)));
+    out.element(
+        input(id)
+            .parent(row_id.as_str())
+            .placeholder(placeholder)
+            .bind(id)
+            .on_submit(Handler::action(action)),
+    );
+    out.element(
+        button(format!("{id}-go"))
+            .parent(row_id.as_str())
+            .variant("primary")
+            .label(label)
+            .on_press(Handler::action(action)),
+    );
 }
 
 /// A line with a remove button.
-fn item(out: &mut Outbox, parent: &str, id: &str, label: String, action: &str, payload: &str, button_label: &str) {
+fn item(
+    out: &mut Outbox,
+    parent: &str,
+    id: &str,
+    label: String,
+    action: &str,
+    payload: &str,
+    button_label: &str,
+) {
     out.element(row(id).parent(parent).justify("between"));
     out.element(text(format!("{id}-t")).parent(id).text(label));
     out.element(
-        button(format!("{id}-x")).parent(id).variant("plain").label(button_label).on_press(Handler::action(action).payload(payload)),
+        button(format!("{id}-x"))
+            .parent(id)
+            .variant("plain")
+            .label(button_label)
+            .on_press(Handler::action(action).payload(payload)),
     );
 }
 
@@ -63,7 +91,10 @@ impl Admin {
     /// minute is in it because the relative times change with it.
     fn sessions_snapshot() -> String {
         let sessions = core().sessions();
-        let rows: Vec<_> = sessions.iter().map(|s| (&s.id, ago(s.updated), s.running, &s.title)).collect();
+        let rows: Vec<_> = sessions
+            .iter()
+            .map(|s| (&s.id, ago(s.updated), s.running, &s.title))
+            .collect();
         serde_json_string(&rows)
     }
 
@@ -72,28 +103,56 @@ impl Admin {
         out.element(column("sessions-body").parent("tab-sessions"));
         let sessions = core().sessions();
         if sessions.is_empty() {
-            out.element(text("sessions-none").parent("sessions-body").variant("caption").text(
-                "No sessions yet. Sessions are started from the remote controller.",
-            ));
+            out.element(
+                text("sessions-none")
+                    .parent("sessions-body")
+                    .variant("caption")
+                    .text("No sessions yet. Sessions are started from the remote controller."),
+            );
         }
         for s in &sessions {
             let id = format!("s-{}", s.id);
             out.element(card(id.as_str()).parent("sessions-body"));
-            out.element(row(format!("{id}-head")).parent(id.as_str()).justify("between"));
-            out.element(text(format!("{id}-name")).parent(format!("{id}-head")).variant("h3").text(s.project.as_str()));
+            out.element(
+                row(format!("{id}-head"))
+                    .parent(id.as_str())
+                    .justify("between"),
+            );
+            out.element(
+                text(format!("{id}-name"))
+                    .parent(format!("{id}-head"))
+                    .variant("h3")
+                    .text(s.project.as_str()),
+            );
             out.element(
                 badge(format!("{id}-state"))
                     .parent(format!("{id}-head"))
                     .variant(if s.running { "success" } else { "neutral" })
-                    .text(if s.running { format!("{} working", s.provider) } else { s.provider.clone() }),
+                    .text(if s.running {
+                        format!("{} working", s.provider)
+                    } else {
+                        s.provider.clone()
+                    }),
             );
-            let line = if s.title.is_empty() { "(empty)".to_string() } else { s.title.clone() };
+            let line = if s.title.is_empty() {
+                "(empty)".to_string()
+            } else {
+                s.title.clone()
+            };
             out.element(text(format!("{id}-title")).parent(id.as_str()).text(line));
-            out.element(text(format!("{id}-when")).parent(id.as_str()).variant("caption").text(format!("{} · {}", s.path, ago(s.updated))));
+            out.element(
+                text(format!("{id}-when"))
+                    .parent(id.as_str())
+                    .variant("caption")
+                    .text(format!("{} · {}", s.path, ago(s.updated))),
+            );
             out.element(row(format!("{id}-btns")).parent(id.as_str()).justify("end"));
             if s.running {
                 out.element(
-                    button(format!("{id}-stop")).parent(format!("{id}-btns")).label("Stop").on_press(Handler::action("stop").payload(s.id.as_str())),
+                    button(format!("{id}-stop"))
+                        .parent(format!("{id}-btns"))
+                        .label("Stop")
+                        .on_press(Handler::action("stop").payload(s.id.as_str())),
                 );
             }
             out.element(
@@ -109,11 +168,19 @@ impl Admin {
 
     fn render(&mut self, out: &mut Outbox) {
         let cfg = core().config();
-        out.remove("root");
+        // Only the tab bodies are rebuilt: recreating the tabs would make
+        // the renderer jump back to the first one.
         out.element(column("root"));
         out.element(text("title").parent("root").variant("h1").text("Grassline"));
+        out.element(column("notes").parent("root"));
+        out.remove("note");
         if let Some((msg, variant)) = &self.note {
-            out.element(notice("note").parent("root").variant(*variant).text(msg.as_str()));
+            out.element(
+                notice("note")
+                    .parent("notes")
+                    .variant(*variant)
+                    .text(msg.as_str()),
+            );
         }
         out.element(tabs("tabs").parent("root"));
 
@@ -123,82 +190,269 @@ impl Admin {
 
         // ---- projects
         out.element(tab("tab-projects").parent("tabs").label("Projects"));
-        out.element(text("p-help").parent("tab-projects").variant("caption").text(
+        out.remove("projects-body");
+        out.element(column("projects-body").parent("tab-projects"));
+        out.element(text("p-help").parent("projects-body").variant("caption").text(
             "Every directory inside a root is a project. A single directory can also be a project of its own.",
         ));
-        out.element(text("p-roots-h").parent("tab-projects").variant("h3").text("Roots"));
+        out.element(
+            text("p-roots-h")
+                .parent("projects-body")
+                .variant("h3")
+                .text("Roots"),
+        );
         for (i, r) in cfg.project_roots.iter().enumerate() {
-            item(out, "tab-projects", &format!("root-{i}"), r.clone(), "remove_root", r, "Remove");
+            item(
+                out,
+                "projects-body",
+                &format!("root-{i}"),
+                r.clone(),
+                "remove_root",
+                r,
+                "Remove",
+            );
         }
-        add_row(out, "tab-projects", "new_root", "/home/me/code", "Add root", "add_root");
-        out.element(text("p-dirs-h").parent("tab-projects").variant("h3").text("Single projects"));
+        add_row(
+            out,
+            "projects-body",
+            "new_root",
+            "/home/me/code",
+            "Add root",
+            "add_root",
+        );
+        out.element(
+            text("p-dirs-h")
+                .parent("projects-body")
+                .variant("h3")
+                .text("Single projects"),
+        );
         for (i, r) in cfg.project_dirs.iter().enumerate() {
-            item(out, "tab-projects", &format!("dir-{i}"), r.clone(), "remove_dir", r, "Remove");
+            item(
+                out,
+                "projects-body",
+                &format!("dir-{i}"),
+                r.clone(),
+                "remove_dir",
+                r,
+                "Remove",
+            );
         }
-        add_row(out, "tab-projects", "new_dir", "/home/me/some/project", "Add project", "add_dir");
-        out.element(text("p-found-h").parent("tab-projects").variant("h3").text("Available projects"));
-        out.element(list("found").parent("tab-projects").empty("None yet."));
+        add_row(
+            out,
+            "projects-body",
+            "new_dir",
+            "/home/me/some/project",
+            "Add project",
+            "add_dir",
+        );
+        out.element(
+            text("p-found-h")
+                .parent("projects-body")
+                .variant("h3")
+                .text("Available projects"),
+        );
+        out.element(list("found").parent("projects-body").empty("None yet."));
         for (i, p) in core().projects().into_iter().enumerate() {
-            out.element(text(format!("found-{i}")).parent("found").text(format!("{}  ·  {}", p.name, p.path)));
+            out.element(
+                text(format!("found-{i}"))
+                    .parent("found")
+                    .text(format!("{}  ·  {}", p.name, p.path)),
+            );
         }
 
         // ---- mobile
         out.element(tab("tab-mobile").parent("tabs").label("Remote control"));
-        out.element(checkbox("mobile").parent("tab-mobile").variant("switch").label("Accept remote controllers").bind("mobile").on_change(Handler::action("set_mobile")));
+        out.remove("mobile-body");
+        out.element(column("mobile-body").parent("tab-mobile"));
+        out.element(
+            checkbox("mobile")
+                .parent("mobile-body")
+                .variant("switch")
+                .label("Accept remote controllers")
+                .bind("mobile")
+                .on_change(Handler::action("set_mobile")),
+        );
         match core().endpoint_id.get() {
-            Some(id) => out.element(text("m-id").parent("tab-mobile").variant("caption").text(format!("Daemon key: {id}"))),
-            None => out.element(text("m-id").parent("tab-mobile").variant("caption").text("The iroh endpoint is not up yet.")),
+            Some(id) => out.element(
+                text("m-id")
+                    .parent("mobile-body")
+                    .variant("caption")
+                    .text(format!("Daemon key: {id}")),
+            ),
+            None => out.element(
+                text("m-id")
+                    .parent("mobile-body")
+                    .variant("caption")
+                    .text("The iroh endpoint is not up yet."),
+            ),
         }
-        out.element(button("pair").parent("tab-mobile").variant("primary").label("New pairing code").on_press(Handler::action("pair")));
+        out.element(
+            button("pair")
+                .parent("mobile-body")
+                .variant("primary")
+                .label("New pairing code")
+                .on_press(Handler::action("pair")),
+        );
         if let Some(t) = &self.ticket {
-            out.element(card("ticket").parent("tab-mobile").title("Paste this in the app (valid for 10 minutes, once)"));
-            out.element(text("ticket-t").parent("ticket").variant("code").text(t.as_str()));
+            out.element(
+                card("ticket")
+                    .parent("mobile-body")
+                    .title("Paste this in the app (valid for 10 minutes, once)"),
+            );
+            out.element(
+                text("ticket-t")
+                    .parent("ticket")
+                    .variant("code")
+                    .text(t.as_str()),
+            );
         }
-        out.element(text("m-dev-h").parent("tab-mobile").variant("h3").text("Paired devices"));
-        out.element(list("devices").parent("tab-mobile").empty("No devices."));
+        out.element(
+            text("m-dev-h")
+                .parent("mobile-body")
+                .variant("h3")
+                .text("Paired devices"),
+        );
+        out.element(list("devices").parent("mobile-body").empty("No devices."));
         for (i, d) in cfg.paired.iter().enumerate() {
             let short: String = d.key.chars().take(12).collect();
-            item(out, "devices", &format!("dev-{i}"), format!("{} ({short}…)", d.name), "unpair", &d.key, "Revoke");
+            item(
+                out,
+                "devices",
+                &format!("dev-{i}"),
+                format!("{} ({short}…)", d.name),
+                "unpair",
+                &d.key,
+                "Revoke",
+            );
         }
 
         // ---- admin access
         out.element(tab("tab-admin").parent("tabs").label("Admin access"));
+        out.remove("admin-body");
+        out.element(column("admin-body").parent("tab-admin"));
         let status = super::HTTP_STATUS.lock().unwrap().clone();
-        out.element(text("a-http-h").parent("tab-admin").variant("h3").text("HTTP"));
-        out.element(checkbox("http_on").parent("tab-admin").variant("switch").label("Serve the admin interface over HTTP").bind("http_on").on_change(Handler::action("set_http")));
-        out.element(text("a-status").parent("tab-admin").variant("caption").text(status));
-        add_row(out, "tab-admin", "http_addr", "127.0.0.1:7878", "Rebind", "set_addr");
-        if !cfg.admin_http.addr.starts_with("127.") && !cfg.admin_http.addr.starts_with("localhost") && !cfg.admin_http.addr.starts_with("[::1]") {
-            out.element(notice("a-warn").parent("tab-admin").variant("warning").text(
+        out.element(
+            text("a-http-h")
+                .parent("admin-body")
+                .variant("h3")
+                .text("HTTP"),
+        );
+        out.element(
+            checkbox("http_on")
+                .parent("admin-body")
+                .variant("switch")
+                .label("Serve the admin interface over HTTP")
+                .bind("http_on")
+                .on_change(Handler::action("set_http")),
+        );
+        out.element(
+            text("a-status")
+                .parent("admin-body")
+                .variant("caption")
+                .text(status),
+        );
+        add_row(
+            out,
+            "admin-body",
+            "http_addr",
+            "127.0.0.1:7878",
+            "Rebind",
+            "set_addr",
+        );
+        if !cfg.admin_http.addr.starts_with("127.")
+            && !cfg.admin_http.addr.starts_with("localhost")
+            && !cfg.admin_http.addr.starts_with("[::1]")
+        {
+            out.element(notice("a-warn").parent("admin-body").variant("warning").text(
                 "Not bound to localhost: other machines must prove a key from the list below to get in.",
             ));
         }
-        out.element(text("a-iroh-h").parent("tab-admin").variant("h3").text("Iroh"));
-        out.element(checkbox("iroh_on").parent("tab-admin").variant("switch").label("Serve the admin interface over iroh").bind("iroh_on").on_change(Handler::action("set_iroh")));
+        out.element(
+            text("a-iroh-h")
+                .parent("admin-body")
+                .variant("h3")
+                .text("Iroh"),
+        );
+        out.element(
+            checkbox("iroh_on")
+                .parent("admin-body")
+                .variant("switch")
+                .label("Serve the admin interface over iroh")
+                .bind("iroh_on")
+                .on_change(Handler::action("set_iroh")),
+        );
         if let Some(id) = core().endpoint_id.get() {
-            out.element(text("a-addr").parent("tab-admin").variant("code").text(format!("hyperb://{id}/")));
+            out.element(
+                text("a-addr")
+                    .parent("admin-body")
+                    .variant("code")
+                    .text(format!("hyperb://{id}/")),
+            );
         }
-        out.element(text("a-keys-h").parent("tab-admin").variant("h3").text("Allowed admin keys"));
+        out.element(
+            text("a-keys-h")
+                .parent("admin-body")
+                .variant("h3")
+                .text("Allowed admin keys"),
+        );
         for (i, k) in cfg.admin_keys.iter().enumerate() {
-            item(out, "tab-admin", &format!("key-{i}"), k.clone(), "remove_key", k, "Remove");
+            item(
+                out,
+                "admin-body",
+                &format!("key-{i}"),
+                k.clone(),
+                "remove_key",
+                k,
+                "Remove",
+            );
         }
-        add_row(out, "tab-admin", "new_key", "hyperb identity (64 hex)", "Allow key", "add_key");
+        add_row(
+            out,
+            "admin-body",
+            "new_key",
+            "hyperb identity (64 hex)",
+            "Allow key",
+            "add_key",
+        );
 
         // ---- agents
         out.element(tab("tab-agents").parent("tabs").label("Agents"));
-        out.element(select("provider").parent("tab-agents").label("Default agent").bind("provider").variant("segmented").options(
-            Value::Array(ALL.iter().map(|p| json!({ "value": p.name(), "label": p.name() })).collect()),
-        ).on_change(Handler::action("set_provider")));
-        out.element(checkbox("auto").parent("tab-agents").variant("switch").label("Let agents run tools without asking (nobody is there to approve)").bind("auto").on_change(Handler::action("set_auto")));
+        out.remove("agents-body");
+        out.element(column("agents-body").parent("tab-agents"));
+        out.element(
+            select("provider")
+                .parent("agents-body")
+                .label("Default agent")
+                .bind("provider")
+                .variant("segmented")
+                .options(Value::Array(
+                    ALL.iter()
+                        .map(|p| json!({ "value": p.name(), "label": p.name() }))
+                        .collect(),
+                ))
+                .on_change(Handler::action("set_provider")),
+        );
+        out.element(
+            checkbox("auto")
+                .parent("agents-body")
+                .variant("switch")
+                .label("Let agents run tools without asking (nobody is there to approve)")
+                .bind("auto")
+                .on_change(Handler::action("set_auto")),
+        );
         for p in ALL {
             let opts = cfg.options(p);
             let found = p.detect(&opts);
             let id = format!("prov-{}", p.name());
-            out.element(card(id.as_str()).parent("tab-agents").title(p.name()));
+            out.element(card(id.as_str()).parent("agents-body").title(p.name()));
             out.element(
                 badge(format!("{id}-b"))
                     .parent(id.as_str())
-                    .variant(if found.is_some() { "success" } else { "failure" })
+                    .variant(if found.is_some() {
+                        "success"
+                    } else {
+                        "failure"
+                    })
                     .text(match &found {
                         Some(path) => path.to_string_lossy().into_owned(),
                         None => "not found".into(),
@@ -213,15 +467,25 @@ impl Admin {
                     .on_submit(Handler::action("set_bin").payload(p.name())),
             );
             out.element(
-                button(format!("{id}-save")).parent(format!("{id}-row")).label("Save").on_press(Handler::action("set_bin").payload(p.name())),
+                button(format!("{id}-save"))
+                    .parent(format!("{id}-row"))
+                    .label("Save")
+                    .on_press(Handler::action("set_bin").payload(p.name())),
             );
         }
     }
 
     fn signals(&self) -> Value {
         let c = core().config();
-        let bins: serde_json::Map<String, Value> =
-            ALL.iter().map(|p| (p.name().to_string(), c.binaries.get(p.name()).cloned().unwrap_or_default().into())).collect();
+        let bins: serde_json::Map<String, Value> = ALL
+            .iter()
+            .map(|p| {
+                (
+                    p.name().to_string(),
+                    c.binaries.get(p.name()).cloned().unwrap_or_default().into(),
+                )
+            })
+            .collect();
         json!({
             "new_root": "", "new_dir": "", "new_key": "",
             "http_addr": c.admin_http.addr,
@@ -259,7 +523,14 @@ impl App for Admin {
         let core = core();
         match a.name.as_str() {
             "add_root" | "add_dir" => {
-                let path = sig(a, if a.name == "add_root" { "new_root" } else { "new_dir" });
+                let path = sig(
+                    a,
+                    if a.name == "add_root" {
+                        "new_root"
+                    } else {
+                        "new_dir"
+                    },
+                );
                 let expanded = crate::core::expand(&path);
                 if path.is_empty() {
                     return;
@@ -268,7 +539,11 @@ impl App for Admin {
                 } else {
                     let root = a.name == "add_root";
                     core.update_config(|c| {
-                        let list = if root { &mut c.project_roots } else { &mut c.project_dirs };
+                        let list = if root {
+                            &mut c.project_roots
+                        } else {
+                            &mut c.project_dirs
+                        };
                         if !list.contains(&path) {
                             list.push(path.clone());
                         }
@@ -308,7 +583,10 @@ impl App for Admin {
                 }
             }
             "set_iroh" => {
-                let on = a.signal("iroh_on").and_then(Value::as_bool).unwrap_or(false);
+                let on = a
+                    .signal("iroh_on")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 core.update_config(|c| c.admin_iroh = on);
             }
             "add_key" => {

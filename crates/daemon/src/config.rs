@@ -47,7 +47,10 @@ impl Default for Config {
             auto_approve: false,
             binaries: Default::default(),
             // Localhost only until the admin says otherwise.
-            admin_http: Listener { enabled: true, addr: "127.0.0.1:7878".into() },
+            admin_http: Listener {
+                enabled: true,
+                addr: "127.0.0.1:7878".into(),
+            },
             admin_iroh: false,
             admin_keys: vec![],
             mobile: true,
@@ -72,13 +75,20 @@ impl Config {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self).expect("serializable"))?;
+        std::fs::write(
+            &tmp,
+            serde_json::to_string_pretty(self).expect("serializable"),
+        )?;
         std::fs::rename(tmp, path)
     }
 
     pub fn options(&self, provider: grassline_agents::Provider) -> grassline_agents::Options {
         grassline_agents::Options {
-            binary: self.binaries.get(provider.name()).cloned().filter(|b| !b.is_empty()),
+            binary: self
+                .binaries
+                .get(provider.name())
+                .cloned()
+                .filter(|b| !b.is_empty()),
             auto_approve: self.auto_approve,
         }
     }

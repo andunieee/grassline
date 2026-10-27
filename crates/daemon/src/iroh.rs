@@ -3,8 +3,8 @@
 //! to the allowed keys (ALPN `hyperb/0`).
 
 use crate::core::Core;
-use crate::{admin, control};
 use crate::hyperb::{iroh_alpn_path, Identity, IROH_ALPN};
+use crate::{admin, control};
 use iroh::endpoint::{presets, Connection, Incoming};
 use iroh::{Endpoint, SecretKey};
 use std::sync::Arc;
@@ -45,7 +45,11 @@ pub async fn serve(core: Arc<Core>, identity: Identity) {
 }
 
 async fn session(core: Arc<Core>, incoming: Incoming) -> Result<(), String> {
-    let conn: Connection = incoming.accept().map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
+    let conn: Connection = incoming
+        .accept()
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     let key = conn.remote_id().to_string();
     let alpn = conn.alpn().to_vec();
     if alpn == grassline_proto::ALPN {

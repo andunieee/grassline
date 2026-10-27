@@ -17,7 +17,11 @@ const TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 #[derive(Debug, Clone)]
 pub enum Update {
     Session(SessionInfo),
-    Msg { id: String, index: usize, message: Message },
+    Msg {
+        id: String,
+        index: usize,
+        message: Message,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,7 +48,10 @@ pub struct Core {
 }
 
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 pub fn random_hex(bytes: usize) -> String {
@@ -59,7 +66,9 @@ impl Core {
         let mut sessions = HashMap::new();
         if let Ok(rd) = std::fs::read_dir(data_dir.join("sessions")) {
             for e in rd.flatten() {
-                let Ok(s) = std::fs::read_to_string(e.path()) else { continue };
+                let Ok(s) = std::fs::read_to_string(e.path()) else {
+                    continue;
+                };
                 match serde_json::from_str::<Session>(&s) {
                     Ok(mut s) => {
                         s.info.running = false;
@@ -131,14 +140,22 @@ impl Core {
         if ok {
             self.update_config(|c| {
                 c.paired.retain(|p| p.key != key);
-                c.paired.push(crate::config::Paired { key: key.into(), name: name.chars().take(60).collect() });
+                c.paired.push(crate::config::Paired {
+                    key: key.into(),
+                    name: name.chars().take(60).collect(),
+                });
             });
         }
         ok
     }
 
     pub fn is_paired(&self, key: &str) -> bool {
-        self.config.read().unwrap().paired.iter().any(|p| p.key == key)
+        self.config
+            .read()
+            .unwrap()
+            .paired
+            .iter()
+            .any(|p| p.key == key)
     }
 
     // ---- projects
@@ -149,12 +166,17 @@ impl Core {
         let mut add = |p: PathBuf| {
             let path = p.to_string_lossy().into_owned();
             if !out.iter().any(|o| o.path == path) {
-                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path.clone());
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or(path.clone());
                 out.push(Project { name, path });
             }
         };
         for root in &c.project_roots {
-            let Ok(rd) = std::fs::read_dir(expand(root)) else { continue };
+            let Ok(rd) = std::fs::read_dir(expand(root)) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let hidden = e.file_name().to_string_lossy().starts_with('.');
                 if !hidden && e.path().is_dir() {
@@ -176,25 +198,41 @@ impl Core {
 
     /// Every session, most recently updated first.
     pub fn sessions(&self) -> Vec<SessionInfo> {
-        let mut v: Vec<_> = self.sessions.lock().unwrap().values().map(|s| s.info.clone()).collect();
+        let mut v: Vec<_> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .map(|s| s.info.clone())
+            .collect();
         v.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
         v
     }
 
-
     pub fn messages(&self, id: &str) -> Option<Vec<Message>> {
-        self.sessions.lock().unwrap().get(id).map(|s| s.messages.clone())
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|s| s.messages.clone())
     }
 
-    pub fn create_session(&self, project: &str, provider: Option<&str>) -> Result<SessionInfo, String> {
+    pub fn create_session(
+        &self,
+        project: &str,
+        provider: Option<&str>,
+    ) -> Result<SessionInfo, String> {
         let project = self
             .projects()
             .into_iter()
             .find(|p| p.path == project || p.name == project)
             .ok_or("that is not one of the projects")?;
         let cfg = self.config();
-        let provider = provider.filter(|p| !p.is_empty()).unwrap_or(&cfg.default_provider);
-        let provider = Provider::from_name(provider).ok_or_else(|| format!("unknown agent {provider}"))?;
+        let provider = provider
+            .filter(|p| !p.is_empty())
+            .unwrap_or(&cfg.default_provider);
+        let provider =
+            Provider::from_name(provider).ok_or_else(|| format!("unknown agent {provider}"))?;
         if provider.detect(&cfg.options(provider)).is_none() {
             return Err(format!("{} is not installed", provider.name()));
         }
@@ -211,7 +249,11 @@ impl Core {
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
-            Session { info: info.clone(), provider_session: None, messages: vec![] },
+            Session {
+                info: info.clone(),
+                provider_session: None,
+                messages: vec![],
+            },
         );
         self.save(&info.id);
         let _ = self.updates.send(Update::Session(info.clone()));
@@ -256,15 +298,30 @@ impl Core {
                     m.text.push_str(&text);
                     m.ts = now;
                 }
-                _ => s.messages.push(Message { role, text, ts: now }),
+                _ => s.messages.push(Message {
+                    role,
+                    text,
+                    ts: now,
+                }),
             }
             let index = s.messages.len() - 1;
             if s.info.title.is_empty() && role == Role::User {
-                s.info.title = s.messages[index].text.lines().next().unwrap_or("").chars().take(80).collect();
+                s.info.title = s.messages[index]
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect();
             }
             (s.info.clone(), index, s.messages[index].clone())
         };
-        let _ = self.updates.send(Update::Msg { id: id.into(), index: update.1, message: update.2 });
+        let _ = self.updates.send(Update::Msg {
+            id: id.into(),
+            index: update.1,
+            message: update.2,
+        });
         let _ = self.updates.send(Update::Session(update.0));
     }
 
@@ -293,7 +350,11 @@ impl Core {
                 return Err("the agent is still working".into());
             }
             s.info.running = true;
-            (s.info.provider.clone(), s.info.path.clone(), s.provider_session.clone())
+            (
+                s.info.provider.clone(),
+                s.info.path.clone(),
+                s.provider_session.clone(),
+            )
         };
         let provider = Provider::from_name(&provider).ok_or("unknown agent")?;
         let opts = self.config().options(provider);

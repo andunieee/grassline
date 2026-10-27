@@ -62,7 +62,13 @@ impl Provider {
     }
 
     /// The command for one turn. `resume` is the id from [`Event::Session`].
-    pub fn command(self, opts: &Options, cwd: &Path, prompt: &str, resume: Option<&str>) -> Command {
+    pub fn command(
+        self,
+        opts: &Options,
+        cwd: &Path,
+        prompt: &str,
+        resume: Option<&str>,
+    ) -> Command {
         let bin = self
             .detect(opts)
             .unwrap_or_else(|| opts.binary.clone().unwrap_or(self.name().into()).into());
@@ -70,7 +76,14 @@ impl Provider {
         match self {
             Provider::Claude => {
                 c.args(["-p", "--output-format", "stream-json", "--verbose"]);
-                c.args(["--permission-mode", if opts.auto_approve { "bypassPermissions" } else { "acceptEdits" }]);
+                c.args([
+                    "--permission-mode",
+                    if opts.auto_approve {
+                        "bypassPermissions"
+                    } else {
+                        "acceptEdits"
+                    },
+                ]);
                 if let Some(id) = resume {
                     c.args(["--resume", id]);
                 }
@@ -133,7 +146,9 @@ fn parse_claude(v: &Value) -> Vec<Event> {
         Some("assistant") => {
             for block in v["message"]["content"].as_array().into_iter().flatten() {
                 match str_of(block, &["type"]) {
-                    Some("text") => out.extend(str_of(block, &["text"]).map(|t| Event::Text(t.into()))),
+                    Some("text") => {
+                        out.extend(str_of(block, &["text"]).map(|t| Event::Text(t.into())))
+                    }
                     Some("tool_use") => {
                         let name = str_of(block, &["name"]).unwrap_or("tool");
                         out.push(Event::Tool(tool_line(name, &block["input"])));
@@ -144,7 +159,9 @@ fn parse_claude(v: &Value) -> Vec<Event> {
         }
         Some("result") => {
             if v["is_error"].as_bool() == Some(true) {
-                let why = str_of(v, &["result"]).or(str_of(v, &["subtype"])).unwrap_or("the agent failed");
+                let why = str_of(v, &["result"])
+                    .or(str_of(v, &["subtype"]))
+                    .unwrap_or("the agent failed");
                 out.push(Event::Error(why.into()));
             }
             out.push(Event::Done);
@@ -179,13 +196,22 @@ fn parse_opencode(v: &Value) -> Vec<Event> {
 
 fn parse_codex(v: &Value) -> Vec<Event> {
     match str_of(v, &["type"]) {
-        Some("thread.started") => str_of(v, &["thread_id"]).map(|i| Event::Session(i.into())).into_iter().collect(),
+        Some("thread.started") => str_of(v, &["thread_id"])
+            .map(|i| Event::Session(i.into()))
+            .into_iter()
+            .collect(),
         Some("item.completed") => {
             let item = &v["item"];
             match str_of(item, &["type"]) {
-                Some("agent_message") => str_of(item, &["text"]).map(|t| Event::Text(t.into())).into_iter().collect(),
+                Some("agent_message") => str_of(item, &["text"])
+                    .map(|t| Event::Text(t.into()))
+                    .into_iter()
+                    .collect(),
                 Some("command_execution") => {
-                    vec![Event::Tool(format!("shell: {}", str_of(item, &["command"]).unwrap_or("")))]
+                    vec![Event::Tool(format!(
+                        "shell: {}",
+                        str_of(item, &["command"]).unwrap_or("")
+                    ))]
                 }
                 Some("file_change") => vec![Event::Tool("edit files".into())],
                 _ => vec![],
@@ -193,7 +219,9 @@ fn parse_codex(v: &Value) -> Vec<Event> {
         }
         Some("turn.completed") => vec![Event::Done],
         Some("turn.failed") | Some("error") => {
-            let why = str_of(v, &["error", "message"]).or(str_of(v, &["message"])).unwrap_or("the agent failed");
+            let why = str_of(v, &["error", "message"])
+                .or(str_of(v, &["message"]))
+                .unwrap_or("the agent failed");
             vec![Event::Error(why.into())]
         }
         _ => vec![],
@@ -202,9 +230,17 @@ fn parse_codex(v: &Value) -> Vec<Event> {
 
 /// `Read: src/main.rs`, `Bash: cargo test`.
 fn tool_line(name: &str, input: &Value) -> String {
-    let arg = ["file_path", "filePath", "path", "command", "pattern", "url", "description"]
-        .iter()
-        .find_map(|k| input.get(k).and_then(Value::as_str));
+    let arg = [
+        "file_path",
+        "filePath",
+        "path",
+        "command",
+        "pattern",
+        "url",
+        "description",
+    ]
+    .iter()
+    .find_map(|k| input.get(k).and_then(Value::as_str));
     match arg {
         Some(a) => {
             let a: String = a.lines().next().unwrap_or("").chars().take(120).collect();
@@ -248,7 +284,13 @@ impl Turn {
             let _ = tokio::io::AsyncReadExt::read_to_string(&mut err, &mut s).await;
             s
         });
-        Ok(Turn { child, lines: BufReader::new(stdout).lines(), provider, stderr, done: false })
+        Ok(Turn {
+            child,
+            lines: BufReader::new(stdout).lines(),
+            provider,
+            stderr,
+            done: false,
+        })
     }
 
     /// The next events; `None` when the turn is over. A process that exits
@@ -276,8 +318,19 @@ impl Turn {
                     if status.is_some_and(|s| !s.success()) {
                         let err = (&mut self.stderr).await.unwrap_or_default();
                         let err = err.trim();
-                        let tail: String = err.chars().rev().take(500).collect::<Vec<_>>().into_iter().rev().collect();
-                        events.push(Event::Error(if tail.is_empty() { "the agent exited with an error".into() } else { tail }));
+                        let tail: String = err
+                            .chars()
+                            .rev()
+                            .take(500)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                        events.push(Event::Error(if tail.is_empty() {
+                            "the agent exited with an error".into()
+                        } else {
+                            tail
+                        }));
                     }
                     events.push(Event::Done);
                     return Some(events);
@@ -317,11 +370,18 @@ mod tests {
     fn opencode_lines() {
         let p = Provider::Opencode;
         assert_eq!(
-            p.parse_line(r#"{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"Hi there."}}"#),
-            vec![Event::Session("ses_1".into()), Event::Text("Hi there.".into())]
+            p.parse_line(
+                r#"{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"Hi there."}}"#
+            ),
+            vec![
+                Event::Session("ses_1".into()),
+                Event::Text("Hi there.".into())
+            ]
         );
         assert_eq!(
-            p.parse_line(r#"{"type":"tool_use","part":{"tool":"bash","state":{"input":{"command":"ls"}}}}"#),
+            p.parse_line(
+                r#"{"type":"tool_use","part":{"tool":"bash","state":{"input":{"command":"ls"}}}}"#
+            ),
             vec![Event::Tool("bash: ls".into())]
         );
     }
@@ -329,12 +389,19 @@ mod tests {
     #[test]
     fn codex_lines() {
         let p = Provider::Codex;
-        assert_eq!(p.parse_line(r#"{"type":"thread.started","thread_id":"t1"}"#), vec![Event::Session("t1".into())]);
         assert_eq!(
-            p.parse_line(r#"{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}"#),
+            p.parse_line(r#"{"type":"thread.started","thread_id":"t1"}"#),
+            vec![Event::Session("t1".into())]
+        );
+        assert_eq!(
+            p.parse_line(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}"#
+            ),
             vec![Event::Text("ok".into())]
         );
-        assert_eq!(p.parse_line(r#"{"type":"turn.completed"}"#), vec![Event::Done]);
+        assert_eq!(
+            p.parse_line(r#"{"type":"turn.completed"}"#),
+            vec![Event::Done]
+        );
     }
-
 }

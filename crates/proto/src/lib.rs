@@ -50,30 +50,61 @@ pub struct SessionInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
-    Pair { token: String, name: String },
+    Pair {
+        token: String,
+        name: String,
+    },
     /// Asks for the projects and the sessions again.
     Refresh,
-    Create { project: String, provider: Option<String> },
+    Create {
+        project: String,
+        provider: Option<String>,
+    },
     /// Starts receiving the messages of a session.
-    Open { id: String },
-    Send { id: String, text: String },
-    Stop { id: String },
+    Open {
+        id: String,
+    },
+    Send {
+        id: String,
+        text: String,
+    },
+    Stop {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ServerMsg {
     /// The answer to the first message: whether the key is let in.
-    Hello { ok: bool, error: Option<String> },
-    Projects { items: Vec<Project> },
+    Hello {
+        ok: bool,
+        error: Option<String>,
+    },
+    Projects {
+        items: Vec<Project>,
+    },
     /// Every session, most recently updated first.
-    Sessions { items: Vec<SessionInfo> },
+    Sessions {
+        items: Vec<SessionInfo>,
+    },
     /// One session changed or was created.
-    Session { info: SessionInfo },
-    History { id: String, messages: Vec<Message> },
+    Session {
+        info: SessionInfo,
+    },
+    History {
+        id: String,
+        messages: Vec<Message>,
+    },
     /// The message at `index` of an opened session was added or grew.
-    Msg { id: String, index: usize, message: Message },
-    Error { message: String },
+    Msg {
+        id: String,
+        index: usize,
+        message: Message,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub fn to_line<T: Serialize>(m: &T) -> String {
@@ -104,7 +135,10 @@ mod tests {
 
     #[test]
     fn lines_round_trip() {
-        let m = ClientMsg::Send { id: "a".into(), text: "hi".into() };
+        let m = ClientMsg::Send {
+            id: "a".into(),
+            text: "hi".into(),
+        };
         let line = to_line(&m);
         assert_eq!(line, "{\"t\":\"send\",\"id\":\"a\",\"text\":\"hi\"}\n");
         assert_eq!(parse::<ClientMsg>(&line).unwrap(), m);

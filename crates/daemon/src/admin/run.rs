@@ -15,7 +15,11 @@ pub enum Cmd {
 }
 
 pub fn now_ms() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64() * 1000.0
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0
 }
 
 fn receive<A: App + Default>(server: &mut Server<A>, mut lines: String) {
@@ -45,7 +49,10 @@ pub async fn run<A: App + Default>(hello: String, mut cmds: mpsc::UnboundedRecei
         if want != ticker.as_ref().map(|t| t.0) {
             ticker = want.map(|ms| {
                 let d = Duration::from_millis(ms.max(1).into());
-                (ms, tokio::time::interval_at(tokio::time::Instant::now() + d, d))
+                (
+                    ms,
+                    tokio::time::interval_at(tokio::time::Instant::now() + d, d),
+                )
             });
         }
         tokio::select! {

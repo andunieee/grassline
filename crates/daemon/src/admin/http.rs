@@ -5,6 +5,7 @@
 use super::app::Admin;
 use super::run::{run, Cmd};
 use crate::core::{random_hex, Core};
+use crate::hyperb::{line_to_event, PublicKey, KEY, SESSION, SIGNATURE};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{self, KeepAlive, Sse};
@@ -12,7 +13,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use futures_util::stream::{self, Stream, StreamExt};
-use crate::hyperb::{line_to_event, PublicKey, KEY, SESSION, SIGNATURE};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -36,13 +36,22 @@ pub fn router(core: Arc<Core>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers([KEY, SESSION, SIGNATURE].map(axum::http::HeaderName::from_static).into_iter().chain([header::CONTENT_TYPE]).collect::<Vec<_>>())
+        .allow_headers(
+            [KEY, SESSION, SIGNATURE]
+                .map(axum::http::HeaderName::from_static)
+                .into_iter()
+                .chain([header::CONTENT_TYPE])
+                .collect::<Vec<_>>(),
+        )
         .expose_headers([axum::http::HeaderName::from_static(SESSION)]);
     Router::new()
         .route("/", get(stream).post(post))
         .route("/{app}", get(stream).post(post))
         .layer(cors)
-        .with_state(St { core, sessions: Default::default() })
+        .with_state(St {
+            core,
+            sessions: Default::default(),
+        })
 }
 
 fn header_str<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -62,7 +71,9 @@ async fn post(
     if let Some(id) = header_str(&headers, SESSION) {
         let map = st.sessions.lock().unwrap();
         return match authorize(&map, id, &headers) {
-            Ok(s) if s.cmds.send(Cmd::Input(body)).is_ok() => StatusCode::NO_CONTENT.into_response(),
+            Ok(s) if s.cmds.send(Cmd::Input(body)).is_ok() => {
+                StatusCode::NO_CONTENT.into_response()
+            }
             Ok(_) => (StatusCode::GONE, "session ended").into_response(),
             Err(r) => r.into_response(),
         };
@@ -72,11 +83,22 @@ async fn post(
     };
     // The key is only claimed here; every later request proves it.
     if !allowed(&st.core, peer, &key) {
-        return (StatusCode::FORBIDDEN, "this key is not allowed into the admin interface").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "this key is not allowed into the admin interface",
+        )
+            .into_response();
     }
     let id = random_hex(32);
     let (cmds, rx) = mpsc::unbounded_channel();
-    st.sessions.lock().unwrap().insert(id.clone(), Session { key, cmds, streaming: false });
+    st.sessions.lock().unwrap().insert(
+        id.clone(),
+        Session {
+            key,
+            cmds,
+            streaming: false,
+        },
+    );
     let (sessions, sid) = (st.sessions.clone(), id.clone());
     tokio::spawn(async move {
         run::<Admin>(body, rx).await;
@@ -86,7 +108,8 @@ async fn post(
 }
 
 async fn stream(State(st): State<St>, headers: HeaderMap) -> Response {
-    let wants_events = header_str(&headers, "accept").is_some_and(|a| a.contains("text/event-stream"));
+    let wants_events =
+        header_str(&headers, "accept").is_some_and(|a| a.contains("text/event-stream"));
     if !wants_events {
         let host = header_str(&headers, "host").unwrap_or("localhost");
         return Html(format!(
@@ -112,10 +135,14 @@ async fn stream(State(st): State<St>, headers: HeaderMap) -> Response {
         return (StatusCode::GONE, "session ended").into_response();
     }
     s.streaming = true;
-    Sse::new(events(rx)).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(events(rx))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
-fn events(rx: mpsc::UnboundedReceiver<String>) -> impl Stream<Item = Result<sse::Event, Infallible>> {
+fn events(
+    rx: mpsc::UnboundedReceiver<String>,
+) -> impl Stream<Item = Result<sse::Event, Infallible>> {
     stream::unfold(rx, |mut rx| async move { Some((rx.recv().await?, rx)) }).flat_map(|chunk| {
         let events: Vec<_> = chunk
             .lines()
@@ -132,12 +159,17 @@ fn authorize<'a>(
     headers: &HeaderMap,
 ) -> Result<&'a Session, (StatusCode, &'static str)> {
     let deny = |why| Err((StatusCode::UNAUTHORIZED, why));
-    let Some(s) = map.get(id) else { return deny("unknown session") };
+    let Some(s) = map.get(id) else {
+        return deny("unknown session");
+    };
     let key = header_str(headers, KEY).and_then(|k| k.parse::<PublicKey>().ok());
     if key != Some(s.key) {
         return deny("the session belongs to another key");
     }
-    if !s.key.verify(id.as_bytes(), header_str(headers, SIGNATURE).unwrap_or_default()) {
+    if !s.key.verify(
+        id.as_bytes(),
+        header_str(headers, SIGNATURE).unwrap_or_default(),
+    ) {
         return deny("bad signature");
     }
     Ok(s)

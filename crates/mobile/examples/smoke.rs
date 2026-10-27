@@ -20,15 +20,22 @@ fn main() {
             if f(&s) {
                 return s;
             }
-            assert!(t.elapsed() < Duration::from_secs(120), "timeout waiting for {what}: {s}");
+            assert!(
+                t.elapsed() < Duration::from_secs(120),
+                "timeout waiting for {what}: {s}"
+            );
             v = c.wait(v, Duration::from_secs(1));
         }
     };
-    let s = until(&c, "connection", &|s| s["state"] == "connected" || s["state"] == "refused");
+    let s = until(&c, "connection", &|s| {
+        s["state"] == "connected" || s["state"] == "refused"
+    });
     println!("state {} {}", s["state"], s["reason"]);
     println!("projects {}", s["projects"]);
     c.create(&a[2]);
-    let s = until(&c, "session", &|s| !s["sessions"].as_array().unwrap().is_empty());
+    let s = until(&c, "session", &|s| {
+        !s["sessions"].as_array().unwrap().is_empty()
+    });
     let id = s["sessions"][0]["id"].as_str().unwrap().to_string();
     c.open(&id);
     c.send_text(&id, &a[3]);
@@ -37,5 +44,8 @@ fn main() {
         let running = s["sessions"][0]["running"].as_bool().unwrap_or(true);
         m.is_some_and(|m| m.len() >= 2) && !running
     });
-    println!("{}", serde_json::to_string_pretty(&s["messages"][&id]).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&s["messages"][&id]).unwrap()
+    );
 }

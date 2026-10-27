@@ -40,7 +40,8 @@ pub async fn supervise_http(core: Arc<Core>) {
                     if let Some((_, old)) = current.take() {
                         old.abort();
                     }
-                    let app = http::router(core.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
+                    let app = http::router(core.clone())
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>();
                     let task = tokio::spawn(async move {
                         if let Err(e) = axum::serve(listener, app).await {
                             eprintln!("admin http: {e}");
@@ -53,7 +54,9 @@ pub async fn supervise_http(core: Arc<Core>) {
                 Err(e) => {
                     eprintln!("cannot listen on {}: {e}", want.addr);
                     set_status(match current {
-                        Some(ref c) => format!("could not bind {} ({e}); still on {}", want.addr, c.0),
+                        Some(ref c) => {
+                            format!("could not bind {} ({e}); still on {}", want.addr, c.0)
+                        }
                         None => format!("could not bind {} ({e})", want.addr),
                     });
                 }
@@ -66,10 +69,18 @@ pub async fn supervise_http(core: Arc<Core>) {
 }
 
 /// An admin session over an iroh stream.
-pub async fn serve_iroh(_core: Arc<Core>, mut send: SendStream, mut recv: RecvStream, conn: Connection) -> Result<(), String> {
+pub async fn serve_iroh(
+    _core: Arc<Core>,
+    mut send: SendStream,
+    mut recv: RecvStream,
+    conn: Connection,
+) -> Result<(), String> {
     let mut lines = Lines::default();
     // QUIC announces the stream when the hello arrives.
-    let hello = lines.read_line(&mut recv).await?.ok_or("closed before hello")?;
+    let hello = lines
+        .read_line(&mut recv)
+        .await?
+        .ok_or("closed before hello")?;
     let (cmds, rx) = mpsc::unbounded_channel();
     let (out, mut out_rx) = mpsc::unbounded_channel();
     let _ = cmds.send(Cmd::Stream(out));
@@ -84,7 +95,9 @@ pub async fn serve_iroh(_core: Arc<Core>, mut send: SendStream, mut recv: RecvSt
     };
     let write = async {
         while let Some(chunk) = out_rx.recv().await {
-            send.write_all(chunk.as_bytes()).await.map_err(|e| e.to_string())?;
+            send.write_all(chunk.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
         }
         let _ = send.finish();
         let _ = conn.closed().await;

@@ -15,25 +15,43 @@ pub async fn serve(
     mut recv: RecvStream,
 ) -> Result<(), String> {
     let mut lines = crate::lines::Lines::default();
-    let first = lines.read_line(&mut recv).await?.ok_or("closed before saying anything")?;
+    let first = lines
+        .read_line(&mut recv)
+        .await?
+        .ok_or("closed before saying anything")?;
     let msg: ClientMsg = parse(&first).map_err(|e| e.to_string())?;
 
     let allowed = core.config().mobile;
     let mut pending = None;
     let hello = if !allowed {
-        ServerMsg::Hello { ok: false, error: Some("remote control is off".into()) }
+        ServerMsg::Hello {
+            ok: false,
+            error: Some("remote control is off".into()),
+        }
     } else if let ClientMsg::Pair { token, name } = &msg {
         if core.is_paired(&key) || core.pair(&key, name, token) {
             println!("paired {name} ({key})");
-            ServerMsg::Hello { ok: true, error: None }
+            ServerMsg::Hello {
+                ok: true,
+                error: None,
+            }
         } else {
-            ServerMsg::Hello { ok: false, error: Some("the pairing code is wrong or expired".into()) }
+            ServerMsg::Hello {
+                ok: false,
+                error: Some("the pairing code is wrong or expired".into()),
+            }
         }
     } else if core.is_paired(&key) {
         pending = Some(msg);
-        ServerMsg::Hello { ok: true, error: None }
+        ServerMsg::Hello {
+            ok: true,
+            error: None,
+        }
     } else {
-        ServerMsg::Hello { ok: false, error: Some("this device is not paired".into()) }
+        ServerMsg::Hello {
+            ok: false,
+            error: Some("this device is not paired".into()),
+        }
     };
     let ok = matches!(hello, ServerMsg::Hello { ok: true, .. });
     write(&mut send, &hello).await?;
@@ -44,8 +62,20 @@ pub async fn serve(
 
     let mut updates = core.subscribe();
     let mut opened = HashSet::<String>::new();
-    write(&mut send, &ServerMsg::Projects { items: core.projects() }).await?;
-    write(&mut send, &ServerMsg::Sessions { items: core.sessions() }).await?;
+    write(
+        &mut send,
+        &ServerMsg::Projects {
+            items: core.projects(),
+        },
+    )
+    .await?;
+    write(
+        &mut send,
+        &ServerMsg::Sessions {
+            items: core.sessions(),
+        },
+    )
+    .await?;
     if let Some(m) = pending {
         handle(&core, &mut send, &mut opened, m).await?;
     }
@@ -89,15 +119,34 @@ async fn handle(
     match msg {
         ClientMsg::Pair { .. } => {}
         ClientMsg::Refresh => {
-            write(send, &ServerMsg::Projects { items: core.projects() }).await?;
-            write(send, &ServerMsg::Sessions { items: core.sessions() }).await?;
+            write(
+                send,
+                &ServerMsg::Projects {
+                    items: core.projects(),
+                },
+            )
+            .await?;
+            write(
+                send,
+                &ServerMsg::Sessions {
+                    items: core.sessions(),
+                },
+            )
+            .await?;
         }
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {
                 Ok(info) => {
                     opened.insert(info.id.clone());
                     // The `Session` update announces it; the history is empty.
-                    write(send, &ServerMsg::History { id: info.id, messages: vec![] }).await?;
+                    write(
+                        send,
+                        &ServerMsg::History {
+                            id: info.id,
+                            messages: vec![],
+                        },
+                    )
+                    .await?;
                 }
                 Err(e) => write(send, &err(e)).await?,
             }
@@ -120,5 +169,7 @@ async fn handle(
 }
 
 async fn write(send: &mut SendStream, m: &ServerMsg) -> Result<(), String> {
-    send.write_all(to_line(m).as_bytes()).await.map_err(|e| e.to_string())
+    send.write_all(to_line(m).as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }

@@ -26,7 +26,11 @@ pub extern "system" fn Java_net_grassline_app_RustBridge_init(
     env.with_env(|env| -> jni::errors::Result<jstring> {
         let dir = dir.try_to_string(env)?;
         #[cfg(target_os = "android")]
-        android_logger::init_once(android_logger::Config::default().with_tag("grassline").with_max_level(log::LevelFilter::Info));
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_tag("grassline")
+                .with_max_level(log::LevelFilter::Info),
+        );
         if CONTROLLER.get().is_none() {
             match Controller::new(std::path::Path::new(&dir)) {
                 Ok(c) => {
@@ -45,9 +49,14 @@ pub extern "system" fn Java_net_grassline_app_RustBridge_init(
 
 /// `snapshot(): String`: the state as JSON.
 #[no_mangle]
-pub extern "system" fn Java_net_grassline_app_RustBridge_snapshot(mut env: EnvUnowned<'_>, _class: JClass) -> jstring {
-    env.with_env(|env| -> jni::errors::Result<jstring> { Ok(env.new_string(controller().snapshot())?.into_raw()) })
-        .resolve::<ThrowRuntimeExAndDefault>()
+pub extern "system" fn Java_net_grassline_app_RustBridge_snapshot(
+    mut env: EnvUnowned<'_>,
+    _class: JClass,
+) -> jstring {
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        Ok(env.new_string(controller().snapshot())?.into_raw())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// `await(seen: Long, timeoutMs: Long): Long`: blocks until the state is newer
@@ -105,18 +114,27 @@ simple! {
 
 /// `refresh()`.
 #[no_mangle]
-pub extern "system" fn Java_net_grassline_app_RustBridge_refresh(_env: EnvUnowned<'_>, _class: JClass) {
+pub extern "system" fn Java_net_grassline_app_RustBridge_refresh(
+    _env: EnvUnowned<'_>,
+    _class: JClass,
+) {
     controller().refresh();
 }
 
 /// `unpair()`.
 #[no_mangle]
-pub extern "system" fn Java_net_grassline_app_RustBridge_unpair(_env: EnvUnowned<'_>, _class: JClass) {
+pub extern "system" fn Java_net_grassline_app_RustBridge_unpair(
+    _env: EnvUnowned<'_>,
+    _class: JClass,
+) {
     controller().unpair();
 }
 
 /// `dismissError()`.
 #[no_mangle]
-pub extern "system" fn Java_net_grassline_app_RustBridge_dismissError(_env: EnvUnowned<'_>, _class: JClass) {
+pub extern "system" fn Java_net_grassline_app_RustBridge_dismissError(
+    _env: EnvUnowned<'_>,
+    _class: JClass,
+) {
     controller().dismiss_error();
 }
