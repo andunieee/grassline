@@ -1,11 +1,12 @@
 //! The admin interface itself.
 
+use super::view::{Tree, View};
 #[cfg(test)]
 use crate::core::random_hex;
 use crate::core::{now_ms, Core};
 use grassline_agents::ALL;
 use hypereffect::ui::*;
-use hypereffect::{json, Action, App, Element, Handler, Metadata, Outbox, Value};
+use hypereffect::{cel, json, Action, App, Element, Handler, Metadata, Outbox, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -27,6 +28,8 @@ pub struct Admin {
     ticket: Option<(String, String)>,
     /// The last thing that went wrong or was done.
     note: Option<(String, &'static str)>,
+    /// What the renderer has.
+    view: View,
 }
 
 fn sig(a: &Action, path: &str) -> String {
@@ -48,7 +51,7 @@ fn ago(ms: u64) -> String {
 }
 
 /// A heading and a form row: an input and the button that sends it.
-fn add_row(out: &mut Outbox, parent: &str, id: &str, placeholder: &str, label: &str, action: &str) {
+fn add_row(out: &mut Tree, parent: &str, id: &str, placeholder: &str, label: &str, action: &str) {
     let row_id = format!("{id}-row");
     out.element(row(row_id.as_str()).parent(parent));
     out.element(
@@ -67,9 +70,19 @@ fn add_row(out: &mut Outbox, parent: &str, id: &str, placeholder: &str, label: &
     );
 }
 
+/// A control for a setting the server has to confirm, kept in the signal
+/// `{key: {value, loading}}`. A change marks it loading, which disables it,
+/// until the server answers with what it actually applied (see
+/// [`Admin::settings`]).
+fn setting(e: Element, key: &str, action: &str) -> Element {
+    e.bind(format!("{key}.value"))
+        .disabled(cel(format!("s.{key}.loading")))
+        .on_change(Handler::action(action).with_patch(json!({ key: { "loading": true } })))
+}
+
 /// A line with a remove button.
 fn item(
-    out: &mut Outbox,
+    out: &mut Tree,
     parent: &str,
     id: &str,
     label: String,
@@ -100,8 +113,7 @@ impl Admin {
         serde_json_string(&rows)
     }
 
-    fn render_sessions(&mut self, out: &mut Outbox) {
-        out.remove("sessions-body");
+    fn sessions(out: &mut Tree) {
         out.element(column("sessions-body").parent("sessions"));
         let sessions = core().sessions();
         if sessions.is_empty() {
@@ -165,17 +177,22 @@ impl Admin {
                     .on_press(Handler::action("delete").payload(s.id.as_str())),
             );
         }
+    }
+
+    /// Sends what changed since the last time.
+    fn render(&mut self, out: &mut Outbox) {
+        let mut tree = Tree::default();
+        self.build(&mut tree);
+        self.view.sync(out, tree);
         self.shown = Self::sessions_snapshot();
     }
 
-    fn render(&mut self, out: &mut Outbox) {
+    /// The whole interface.
+    fn build(&self, out: &mut Tree) {
         let cfg = core().config();
-        // Only the tab bodies are rebuilt: recreating the tabs would make
-        // the renderer jump back to the first one.
         out.element(column("root"));
         out.element(text("title").parent("root").variant("h1").text("Grassline"));
         out.element(column("notes").parent("root"));
-        out.remove("note");
         if let Some((msg, variant)) = &self.note {
             out.element(
                 notice("note")
@@ -188,7 +205,6 @@ impl Admin {
 
         // ---- access: the remote controllers and their sessions
         out.element(tab("tab-access").parent("tabs").label("Access"));
-        out.remove("mobile-body");
         out.element(column("mobile-body").parent("tab-access"));
         match core().endpoint_id.get() {
             Some(id) => out.element(
@@ -251,7 +267,6 @@ impl Admin {
                 "Revoke",
             );
         }
-        // Its own column, so the sessions can be redrawn in place.
         out.element(column("sessions").parent("tab-access"));
         out.element(
             text("sessions-h")
@@ -259,11 +274,10 @@ impl Admin {
                 .variant("h3")
                 .text("Sessions"),
         );
-        self.render_sessions(out);
+        Self::sessions(out);
 
         // ---- projects
         out.element(tab("tab-projects").parent("tabs").label("Projects"));
-        out.remove("projects-body");
         out.element(column("projects-body").parent("tab-projects"));
         out.element(text("p-help").parent("projects-body").variant("caption").text(
             "Every directory inside a root is a project. A single directory can also be a project of its own.",
@@ -335,7 +349,6 @@ impl Admin {
 
         // ---- admin
         out.element(tab("tab-admin").parent("tabs").label("Admin"));
-        out.remove("admin-body");
         out.element(column("admin-body").parent("tab-admin"));
         let status = super::HTTP_STATUS.lock().unwrap().clone();
         out.element(
@@ -344,14 +357,14 @@ impl Admin {
                 .variant("h3")
                 .text("HTTP"),
         );
-        out.element(
+        out.element(setting(
             checkbox("http_on")
                 .parent("admin-body")
                 .variant("switch")
-                .label("Serve the admin interface over HTTP")
-                .bind("http_on")
-                .on_change(Handler::action("set_http")),
-        );
+                .label("Serve the admin interface over HTTP"),
+            "http_on",
+            "set_http",
+        ));
         out.element(
             text("a-status")
                 .parent("admin-body")
@@ -380,14 +393,14 @@ impl Admin {
                 .variant("h3")
                 .text("Iroh"),
         );
-        out.element(
+        out.element(setting(
             checkbox("iroh_on")
                 .parent("admin-body")
                 .variant("switch")
-                .label("Serve the admin interface over iroh")
-                .bind("iroh_on")
-                .on_change(Handler::action("set_iroh")),
-        );
+                .label("Serve the admin interface over iroh"),
+            "iroh_on",
+            "set_iroh",
+        ));
         if let Some(id) = core().endpoint_id.get().filter(|_| cfg.admin_iroh) {
             let url = format!("hyperb://{id}/");
             if let Some(src) = super::qr::data_uri(&url) {
@@ -433,29 +446,28 @@ impl Admin {
 
         // ---- agents
         out.element(tab("tab-agents").parent("tabs").label("Agents"));
-        out.remove("agents-body");
         out.element(column("agents-body").parent("tab-agents"));
-        out.element(
+        out.element(setting(
             select("provider")
                 .parent("agents-body")
                 .label("Default agent")
-                .bind("provider")
                 .variant("segmented")
                 .options(Value::Array(
                     ALL.iter()
                         .map(|p| json!({ "value": p.name(), "label": p.name() }))
                         .collect(),
-                ))
-                .on_change(Handler::action("set_provider")),
-        );
-        out.element(
+                )),
+            "provider",
+            "set_provider",
+        ));
+        out.element(setting(
             checkbox("auto")
                 .parent("agents-body")
                 .variant("switch")
-                .label("Let agents run tools without asking (otherwise they ask the app)")
-                .bind("auto")
-                .on_change(Handler::action("set_auto")),
-        );
+                .label("Let agents run tools without asking (otherwise they ask the app)"),
+            "auto",
+            "set_auto",
+        ));
         for p in ALL {
             let opts = cfg.options(p);
             let found = p.detect(&opts);
@@ -491,6 +503,19 @@ impl Admin {
         }
     }
 
+    /// The settings as they are, which every action answers with: it puts
+    /// back a control the server did not follow, and ends its loading.
+    fn settings() -> Value {
+        let c = core().config();
+        let s = |v: Value| json!({ "value": v, "loading": false });
+        json!({
+            "http_on": s(c.admin_http.enabled.into()),
+            "iroh_on": s(c.admin_iroh.into()),
+            "provider": s(c.default_provider.into()),
+            "auto": s(c.auto_approve.into()),
+        })
+    }
+
     fn signals(&self) -> Value {
         let c = core().config();
         let bins: serde_json::Map<String, Value> = ALL
@@ -502,15 +527,13 @@ impl Admin {
                 )
             })
             .collect();
-        json!({
+        let mut s = json!({
             "new_root": "", "new_dir": "", "new_key": "",
             "http_addr": c.admin_http.addr,
-            "http_on": c.admin_http.enabled,
-            "iroh_on": c.admin_iroh,
-            "provider": c.default_provider,
-            "auto": c.auto_approve,
             "bin": bins,
-        })
+        });
+        hypereffect::signals::merge_patch(&mut s, &Self::settings());
+        s
     }
 
     fn ok(&mut self, msg: impl Into<String>) {
@@ -582,7 +605,10 @@ impl App for Admin {
             }
             "unpair" => core.update_config(|c| c.paired.retain(|p| p.key != payload)),
             "set_http" => {
-                let on = a.signal("http_on").and_then(Value::as_bool).unwrap_or(true);
+                let on = a
+                    .signal("http_on.value")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
                 core.update_config(|c| c.admin_http.enabled = on);
                 if !on {
                     self.ok("HTTP is off: this session stays open, but new ones can only come over iroh.");
@@ -600,7 +626,7 @@ impl App for Admin {
             }
             "set_iroh" => {
                 let on = a
-                    .signal("iroh_on")
+                    .signal("iroh_on.value")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 core.update_config(|c| c.admin_iroh = on);
@@ -620,11 +646,14 @@ impl App for Admin {
             }
             "remove_key" => core.update_config(|c| c.admin_keys.retain(|k| *k != payload)),
             "set_provider" => {
-                let p = sig(a, "provider");
+                let p = sig(a, "provider.value");
                 core.update_config(|c| c.default_provider = p);
             }
             "set_auto" => {
-                let on = a.signal("auto").and_then(Value::as_bool).unwrap_or(false);
+                let on = a
+                    .signal("auto.value")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 core.update_config(|c| c.auto_approve = on);
             }
             "set_bin" => {
@@ -641,19 +670,20 @@ impl App for Admin {
             "delete" => core.delete_session(&payload),
             _ => return,
         }
+        out.signal(Self::settings());
         self.render(out);
     }
 
     fn tick(&mut self, out: &mut Outbox, _now_ms: f64) {
-        if Self::sessions_snapshot() != self.shown {
-            self.render_sessions(out);
-        }
         // A code that was used or expired goes away; a new device shows up.
         if let Some((_, token)) = &self.ticket {
             if !core().token_pending(token) {
                 self.ticket = None;
-                self.render(out);
+                self.shown.clear();
             }
+        }
+        if Self::sessions_snapshot() != self.shown {
+            self.render(out);
         }
     }
 
@@ -681,6 +711,19 @@ mod tests {
         assert!(l.trigger("pair", "onPress"));
         let src = l.client.attr("ticket-qr", "src").expect("a QR code");
         assert!(src.as_str().unwrap().starts_with("data:image/png;base64,"));
+        assert!(l.client.take_diagnostics().is_empty());
+
+        // A setting waits for the server, which answers with what it
+        // applied, and sends no elements when nothing else changed.
+        l.write("auto.value", json!(true));
+        let line = l.client.trigger("auto", "onChange").expect("an action");
+        assert_eq!(l.client.attr("auto", "disabled"), Some(json!(true)));
+        l.server.receive(line.as_bytes());
+        let out = l.server.output().take();
+        assert!(!out.contains("element "), "{out}");
+        l.client.receive(out.as_bytes());
+        assert_eq!(l.client.attr("auto", "disabled"), Some(json!(false)));
+        assert!(super::core().config().auto_approve);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -5,6 +5,7 @@ mod app;
 mod http;
 mod qr;
 mod run;
+mod view;
 
 use crate::core::Core;
 use crate::lines::Lines;
