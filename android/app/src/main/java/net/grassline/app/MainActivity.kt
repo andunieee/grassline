@@ -279,6 +279,8 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     var agentMenu by remember { mutableStateOf(false) }
     // The agent to switch to, once the user confirms.
     var switchTo by remember { mutableStateOf<String?>(null) }
+    var pickingModel by remember { mutableStateOf(false) }
+    var permissionsMenu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
     LaunchedEffect(messages.size, messages.lastOrNull()) {
         if (messages.isNotEmpty()) list.animateScrollToItem(messages.size - 1)
@@ -286,21 +288,35 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     Scaffold(
         modifier = Modifier.imePadding(),
         topBar = {
-            TopAppBar(
-                title = { Text(session.project) },
-                navigationIcon = { TextButton(onBack) { Text("←") } },
-                actions = {
+            Column {
+                TopAppBar(
+                    title = { Text(session.project) },
+                    navigationIcon = { TextButton(onBack) { Text("←") } },
+                )
+                // What the next message runs with.
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box {
-                        TextButton({ agentMenu = true }, enabled = !session.running && state.agents.isNotEmpty()) {
-                            Text(session.provider + " ▾")
-                        }
+                        AssistChip({ agentMenu = true }, { Text(session.provider + " ▾") }, enabled = !session.running && state.agents.isNotEmpty())
                         AgentMenu(agentMenu, state.agents, session.provider, { agentMenu = false }) {
                             agentMenu = false
                             if (it != session.provider) switchTo = it
                         }
                     }
-                },
-            )
+                    AssistChip({ pickingModel = true }, { Text(modelLabel(state, session) + " ▾", maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.widthIn(max = 200.dp))
+                    Box {
+                        AssistChip({ permissionsMenu = true }, { Text(PERMISSIONS.firstOrNull { it.first == session.permissions }?.second.orEmpty() + " ▾") })
+                        DropdownMenu(permissionsMenu, { permissionsMenu = false }) {
+                            for ((value, label, about) in PERMISSIONS) {
+                                DropdownMenuItem(
+                                    text = { Column { Text(label); Text(about, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) } },
+                                    leadingIcon = { Text(if (value == session.permissions) "✓" else "") },
+                                    onClick = { permissionsMenu = false; RustBridge.setPermissions(session.id, value) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         },
         bottomBar = {
             Column(Modifier.navigationBarsPadding()) {
@@ -345,6 +361,13 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         }
     }
 
+    if (pickingModel) {
+        ModelPicker(state, session, onDismiss = { pickingModel = false }) {
+            pickingModel = false
+            RustBridge.setModel(session.id, it)
+        }
+    }
+
     switchTo?.let { to ->
         AlertDialog(
             onDismissRequest = { switchTo = null },
@@ -354,6 +377,69 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             dismissButton = { TextButton({ switchTo = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** What a session's agent may do without asking: the value, its label, and what it means. */
+val PERMISSIONS = listOf(
+    Triple("ask", "Ask first", "Asks before every tool that needs it"),
+    Triple("auto", "Auto", "Runs what looks safe, asks for the rest"),
+    Triple("all", "Don't ask", "Runs every tool without asking"),
+)
+
+fun modelLabel(state: AppState, session: SessionInfo): String {
+    val known = state.models[session.provider]?.items?.firstOrNull { it.id == session.model }
+    return when {
+        session.model.isEmpty() -> "default model"
+        known != null -> known.name
+        else -> session.model
+    }
+}
+
+/** The models of the session's agent, filtered by what is typed: every word must appear. */
+@Composable
+fun ModelPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    LaunchedEffect(session.provider) { RustBridge.models(session.provider) }
+    val list = state.models[session.provider]
+    var query by remember { mutableStateOf("") }
+    val words = query.lowercase().split(' ').filter { it.isNotBlank() }
+    val items = list?.items.orEmpty().let { items ->
+        // There is always a way back to the agent's own choice.
+        if (items.any { it.id.isEmpty() }) items else listOf(AgentModel("", "Default", "Whatever ${session.provider} picks")) + items
+    }.filter { m -> "${m.id} ${m.name} ${m.description}".lowercase().let { t -> words.all { it in t } } }
+    val typed = query.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Cancel") } },
+        title = { Text("Model for ${session.provider}") },
+        text = {
+            Column {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Filter") }, singleLine = true)
+                if (list?.error != null) {
+                    Text(list.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                    TextButton({ RustBridge.models(session.provider) }) { Text("Retry") }
+                }
+                if (list == null || list.loading && list.items.isEmpty()) {
+                    CircularProgressIndicator(Modifier.padding(16.dp).size(24.dp), strokeWidth = 2.dp)
+                }
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(items, key = { it.id }) { m ->
+                        ListItem(
+                            headlineContent = { Text(m.name) },
+                            supportingContent = (m.description.ifEmpty { m.id.takeIf { it != m.name } })?.let { { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis) } },
+                            leadingContent = { Text(if (m.id == session.model) "✓" else "") },
+                            modifier = Modifier.clickable { onPick(m.id) },
+                        )
+                    }
+                    // A model the agent did not list.
+                    if (typed.isNotEmpty() && ' ' !in typed && items.none { it.id == typed }) {
+                        item {
+                            ListItem(headlineContent = { Text("Use “$typed”") }, modifier = Modifier.clickable { onPick(typed) })
+                        }
+                    }
+                }
+            }
+        },
+    )
 }
 
 /** The agents to pick from; the ones the daemon cannot find are greyed out. */

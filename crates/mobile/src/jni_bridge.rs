@@ -112,6 +112,13 @@ simple! {
     Java_net_grassline_app_RustBridge_create(project, provider) => |c, project, provider| c.create(&project, &provider);
     Java_net_grassline_app_RustBridge_setDefaultAgent(provider) => |c, provider| c.set_default_agent(&provider);
     Java_net_grassline_app_RustBridge_setAgent(id, provider) => |c, id, provider| c.set_agent(&id, &provider);
+    Java_net_grassline_app_RustBridge_setModel(id, model) => |c, id, model| c.set_model(&id, &model);
+    Java_net_grassline_app_RustBridge_setPermissions(id, permissions) => |c, id, permissions| {
+        if let Err(e) = c.set_permissions(&id, &permissions) {
+            log::warn!("bad permissions: {e}");
+        }
+    };
+    Java_net_grassline_app_RustBridge_models(provider) => |c, provider| c.models(&provider);
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
     Java_net_grassline_app_RustBridge_stop(id) => |c, id| c.stop(&id);
     Java_net_grassline_app_RustBridge_send(id, text) => |c, id, text| c.send_text(&id, &text);

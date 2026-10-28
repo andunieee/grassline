@@ -27,14 +27,15 @@ server, an account, a port to open or a VPN.
   first. The ones where an agent is waiting for you are marked **needs you**.
 - **You decide what runs.** Before an agent runs a command or edits a file that needs your
   permission, the app shows exactly what it wants to do. You can **Allow** it, **Always** allow
-  that tool for the rest of the session, or **Deny** it and say why. You can also let agents run
-  tools without asking.
+  that tool for the rest of the session, or **Deny** it and say why. Each session can also run in
+  **Auto**, where the agent runs what looks safe and asks only for the rest, or **Don't ask**.
 - **Questions with real answers.** When an agent asks you something, its options show up as
   chips, and you can always write something else.
 - **See every step.** Each file read, search, edit and command shows up as one line. Tap it to
   see its input and output.
 - **Pick your agent.** Choose Claude Code, opencode or Codex for each new session, change the
-  default, or switch a running conversation to another agent.
+  default, or switch a running conversation to another agent. Pick its model from the list the
+  agent gives, and type to filter it.
 - **Voice messages.** Tap 🎤, talk, and the agent gets the text. Transcription uses the
   speech-to-text service you choose (OpenAI, OpenRouter, Groq, Mistral or any compatible one).
   The phone calls it directly, so the audio never passes through your computer.

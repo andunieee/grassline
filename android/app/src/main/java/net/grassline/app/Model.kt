@@ -8,6 +8,12 @@ data class Project(val name: String, val path: String)
 /** An agent the daemon can run; [installed] when its binary was found there. */
 data class Agent(val name: String, val installed: Boolean)
 
+/** A model an agent can use; an empty [id] is the agent's default. */
+data class AgentModel(val id: String, val name: String, val description: String)
+
+/** An agent's models, once asked for with [RustBridge.models]. */
+data class ModelList(val items: List<AgentModel>, val error: String?, val loading: Boolean)
+
 data class SessionInfo(
     val id: String,
     val project: String,
@@ -17,6 +23,10 @@ data class SessionInfo(
     val running: Boolean,
     /** The agent waits for a decision. */
     val waiting: Boolean,
+    /** An [AgentModel.id]; empty for the agent's default. */
+    val model: String = "",
+    /** ask, auto or all. */
+    val permissions: String = "ask",
 )
 
 /** The speech-to-text service the daemon set up for voice messages. */
@@ -76,6 +86,8 @@ data class AppState(
     val agents: List<Agent> = emptyList(),
     /** The agent new sessions use by default. */
     val defaultAgent: String = "",
+    /** By agent; only the ones asked for. */
+    val models: Map<String, ModelList> = emptyMap(),
     /** Most recent first. */
     val sessions: List<SessionInfo> = emptyList(),
     /** Null when voice messages are not set up. */
@@ -93,11 +105,21 @@ data class AppState(
                 projects = o.getJSONArray("projects").map { Project(it.getString("name"), it.getString("path")) },
                 agents = o.optJSONArray("agents").map { Agent(it.getString("name"), it.optBoolean("installed")) },
                 defaultAgent = o.optString("default_agent"),
+                models = o.optJSONObject("models")?.let { m ->
+                    m.keys().asSequence().associateWith { k ->
+                        val l = m.getJSONObject(k)
+                        ModelList(
+                            l.optJSONArray("items").map { AgentModel(it.getString("id"), it.getString("name"), it.optString("description")) },
+                            l.optStringOrNull("error"),
+                            l.optBoolean("loading"),
+                        )
+                    }
+                } ?: emptyMap(),
                 sessions = o.getJSONArray("sessions").map {
                     SessionInfo(
                         it.getString("id"), it.getString("project"), it.getString("provider"),
                         it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
-                        it.optBoolean("waiting"),
+                        it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
                     )
                 },
                 transcription = o.optJSONObject("transcription")?.let {

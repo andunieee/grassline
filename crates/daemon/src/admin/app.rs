@@ -464,12 +464,17 @@ impl Admin {
             "set_provider",
         ));
         out.element(setting(
-            checkbox("auto")
+            select("permissions")
                 .parent("agents-body")
-                .variant("switch")
-                .label("Let agents run tools without asking (otherwise they ask the app)"),
-            "auto",
-            "set_auto",
+                .label("New sessions run tools (the app changes it for each session)")
+                .variant("segmented")
+                .options(json!([
+                    { "value": "ask", "label": "Asking the app" },
+                    { "value": "auto", "label": "Asking for risky ones" },
+                    { "value": "all", "label": "Without asking" },
+                ])),
+            "permissions",
+            "set_permissions",
         ));
         for p in ALL {
             let opts = cfg.options(p);
@@ -589,7 +594,7 @@ impl Admin {
             "http_on": s(c.admin_http.enabled.into()),
             "iroh_on": s(c.admin_iroh.into()),
             "provider": s(c.default_provider.into()),
-            "auto": s(c.auto_approve.into()),
+            "permissions": s(json!(c.permissions)),
             "stt": s(c.transcription.provider.into()),
         })
     }
@@ -742,12 +747,11 @@ impl App for Admin {
                 let p = sig(a, "provider.value");
                 core.update_config(|c| c.default_provider = p);
             }
-            "set_auto" => {
-                let on = a
-                    .signal("auto.value")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                core.update_config(|c| c.auto_approve = on);
+            "set_permissions" => {
+                let p = a.signal("permissions.value").cloned().unwrap_or_default();
+                if let Ok(p) = serde_json::from_value(p) {
+                    core.update_config(|c| c.permissions = p);
+                }
             }
             "set_bin" => {
                 let bin = sig(a, &format!("bin.{payload}"));
@@ -832,15 +836,18 @@ mod tests {
 
         // A setting waits for the server, which answers with what it
         // applied, and sends no elements when nothing else changed.
-        l.write("auto.value", json!(true));
-        let line = l.client.trigger("auto", "onChange").expect("an action");
-        assert_eq!(l.client.attr("auto", "disabled"), Some(json!(true)));
+        l.write("permissions.value", json!("auto"));
+        let line = l.client.trigger("permissions", "onChange").expect("an action");
+        assert_eq!(l.client.attr("permissions", "disabled"), Some(json!(true)));
         l.server.receive(line.as_bytes());
         let out = l.server.output().take();
         assert!(!out.contains("element "), "{out}");
         l.client.receive(out.as_bytes());
-        assert_eq!(l.client.attr("auto", "disabled"), Some(json!(false)));
-        assert!(super::core().config().auto_approve);
+        assert_eq!(l.client.attr("permissions", "disabled"), Some(json!(false)));
+        assert_eq!(
+            super::core().config().permissions,
+            grassline_proto::Permissions::Auto
+        );
 
         // Speech to text asks for a key once a provider is picked.
         assert_eq!(l.client.attr("stt-key", "bind"), None);

@@ -3,8 +3,8 @@
 use crate::config::Config;
 use grassline_agents::{Answer, Event, Provider, Turn};
 use grassline_proto::{
-    Agent, Ask, Choice, Decision, Message, Project, Question, Role, SessionInfo, ToolCall,
-    ToolStatus,
+    Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Role,
+    SessionInfo, ToolCall, ToolStatus,
 };
 
 /// The requests the agent waits for: the tool call's message index, and the
@@ -19,6 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, watch};
 
 const TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long an agent's list of models is kept.
+const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
 /// How much of a tool's output is kept.
 const OUTPUT_MAX: usize = 4000;
 
@@ -62,6 +64,8 @@ pub struct Core {
     updates: broadcast::Sender<Update>,
     turns: Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>,
     tokens: Mutex<Vec<(String, Instant)>>,
+    /// The models of each agent, by provider name, and when they were listed.
+    models: Mutex<HashMap<String, (Instant, Vec<Model>)>>,
     /// The iroh endpoint id, once the endpoint is up.
     pub endpoint_id: OnceLock<String>,
     pub online: AtomicBool,
@@ -89,7 +93,15 @@ impl Core {
                 let Ok(s) = std::fs::read_to_string(e.path()) else {
                     continue;
                 };
-                match serde_json::from_str::<Session>(&s) {
+                let parsed = serde_json::from_str::<serde_json::Value>(&s).and_then(|v| {
+                    let mut s: Session = serde_json::from_value(v.clone())?;
+                    // From before sessions had their own.
+                    if v["info"].get("permissions").is_none() {
+                        s.info.permissions = config.permissions;
+                    }
+                    Ok(s)
+                });
+                match parsed {
                     Ok(mut s) => {
                         s.info.running = false;
                         s.info.waiting = false;
@@ -109,6 +121,7 @@ impl Core {
             updates: broadcast::channel(1024).0,
             turns: Default::default(),
             tokens: Default::default(),
+            models: Default::default(),
             endpoint_id: OnceLock::new(),
             online: AtomicBool::new(false),
         })
@@ -257,6 +270,7 @@ impl Core {
     /// Switches a session to another agent, which starts a new conversation.
     pub fn set_agent(&self, id: &str, name: &str) -> Result<(), String> {
         let provider = self.installed(name)?;
+        let model = self.default_model(provider.name());
         let info = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id).ok_or("no such session")?;
@@ -267,11 +281,78 @@ impl Core {
                 return Ok(());
             }
             s.info.provider = provider.name().into();
+            s.info.model = model;
             s.info.updated = now_ms();
             // The other agent's conversation id means nothing to this one,
             // nor do the tools allowed to it.
             s.provider_session = None;
             s.allowed.clear();
+            s.info.clone()
+        };
+        self.save(id);
+        let _ = self.updates.send(Update::Session(info));
+        Ok(())
+    }
+
+    /// The model new sessions with this agent get.
+    fn default_model(&self, provider: &str) -> String {
+        self.config
+            .read()
+            .unwrap()
+            .models
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The models an agent offers; asked of it at most every few minutes.
+    pub async fn models(&self, name: &str) -> Result<Vec<Model>, String> {
+        let provider = self.installed(name)?;
+        if let Some((at, m)) = self.models.lock().unwrap().get(name) {
+            if at.elapsed() < MODELS_TTL {
+                return Ok(m.clone());
+            }
+        }
+        let models: Vec<Model> = provider
+            .models(&self.config().options(provider))
+            .await
+            .map_err(|e| format!("could not list the models of {name}: {e}"))?
+            .into_iter()
+            .map(|m| Model {
+                id: m.id,
+                name: m.name,
+                description: m.description,
+            })
+            .collect();
+        self.models
+            .lock()
+            .unwrap()
+            .insert(name.into(), (Instant::now(), models.clone()));
+        Ok(models)
+    }
+
+    /// Sets the model of a session, and of the next sessions with its agent.
+    pub fn set_model(&self, id: &str, model: &str) -> Result<(), String> {
+        let model = model.trim().to_string();
+        let mut provider = String::new();
+        self.edit_info(id, |i| {
+            provider = i.provider.clone();
+            i.model = model.clone();
+        })?;
+        self.update_config(|c| c.models.insert(provider, model));
+        Ok(())
+    }
+
+    pub fn set_permissions(&self, id: &str, permissions: Permissions) -> Result<(), String> {
+        self.edit_info(id, |i| i.permissions = permissions)
+    }
+
+    /// Changes what is known of a session, saves it and tells the watchers.
+    fn edit_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Result<(), String> {
+        let info = {
+            let mut map = self.sessions.lock().unwrap();
+            let s = map.get_mut(id).ok_or("no such session")?;
+            f(&mut s.info);
             s.info.clone()
         };
         self.save(id);
@@ -329,6 +410,8 @@ impl Core {
             updated: now,
             running: false,
             waiting: false,
+            model: cfg.models.get(provider.name()).cloned().unwrap_or_default(),
+            permissions: cfg.permissions,
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
@@ -494,7 +577,7 @@ impl Core {
         if text.is_empty() {
             return Err("empty message".into());
         }
-        let (provider, path, resume) = {
+        let (provider, path, resume, model, permissions) = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id).ok_or("no such session")?;
             if s.info.running {
@@ -505,10 +588,20 @@ impl Core {
                 s.info.provider.clone(),
                 s.info.path.clone(),
                 s.provider_session.clone(),
+                s.info.model.clone(),
+                s.info.permissions,
             )
         };
         let provider = Provider::from_name(&provider).ok_or("unknown agent")?;
-        let opts = self.config().options(provider);
+        let opts = grassline_agents::Options {
+            model,
+            permissions: match permissions {
+                Permissions::Ask => grassline_agents::Permissions::Ask,
+                Permissions::Auto => grassline_agents::Permissions::Auto,
+                Permissions::All => grassline_agents::Permissions::All,
+            },
+            ..self.config().options(provider)
+        };
         let turn = Turn::start(provider, &opts, Path::new(&path), text, resume.as_deref());
         let turn = match turn {
             Ok(t) => t,

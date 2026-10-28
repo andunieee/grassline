@@ -3,7 +3,7 @@
 //! stdio` makes it ask there (`can_use_tool`) before a tool that needs
 //! permission, and for `AskUserQuestion`.
 
-use crate::{content_text, str_of, tool, Answer, Choice, Driver, Event, Question, Start};
+use crate::{content_text, str_of, tool, Answer, Choice, Driver, Event, Model, Question, Start};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -153,6 +153,26 @@ fn questions(input: &Value) -> Vec<Question> {
         .collect()
 }
 
+/// The models in the answer to `initialize`; its "default" is the empty id.
+pub(crate) fn models(v: &Value) -> Option<Vec<Model>> {
+    if str_of(v, &["response", "request_id"]) != Some("init") {
+        return None;
+    }
+    let list = v["response"]["response"]["models"].as_array()?;
+    Some(
+        list.iter()
+            .filter_map(|m| {
+                let id = str_of(m, &["value"])?;
+                Some(Model {
+                    id: if id == "default" { "" } else { id }.into(),
+                    name: str_of(m, &["displayName"]).unwrap_or(id).into(),
+                    description: str_of(m, &["description"]).unwrap_or("").into(),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +210,20 @@ mod tests {
                 Event::Done,
             ]
         );
+    }
+
+    #[test]
+    fn listing_models() {
+        let v = json!({ "type": "control_response", "response": {
+            "subtype": "success", "request_id": "init", "response": { "models": [
+                { "value": "default", "displayName": "Default (recommended)", "description": "Opus" },
+                { "value": "sonnet", "displayName": "Sonnet", "description": "" },
+            ]},
+        }});
+        let m = models(&v).unwrap();
+        assert_eq!(m[0].id, "");
+        assert_eq!(m[1].id, "sonnet");
+        assert_eq!(models(&json!({ "type": "system" })), None);
     }
 
     #[test]

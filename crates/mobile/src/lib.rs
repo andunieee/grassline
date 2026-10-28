@@ -6,8 +6,8 @@
 mod jni_bridge;
 
 use grassline_proto::{
-    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Project, ServerMsg, SessionInfo,
-    Transcription, ALPN,
+    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Model, Permissions, Project,
+    ServerMsg, SessionInfo, Transcription, ALPN,
 };
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -42,11 +42,21 @@ struct State {
     sessions: Vec<SessionInfo>,
     /// Where voice messages are turned into text, if the daemon set it up.
     transcription: Option<Transcription>,
+    /// The models of the agents they were asked for, by provider name.
+    models: HashMap<String, Models>,
     /// The messages of the sessions that were opened.
     messages: HashMap<String, Vec<Message>>,
     /// The last error the daemon reported.
     error: Option<String>,
     version: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct Models {
+    items: Vec<Model>,
+    error: Option<String>,
+    /// They were asked for and have not arrived yet.
+    loading: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -201,6 +211,38 @@ impl Controller {
         });
     }
 
+    /// Sets a session's model from its next message on.
+    pub fn set_model(&self, id: &str, model: &str) {
+        self.send(ClientMsg::SetModel {
+            id: id.into(),
+            model: model.into(),
+        });
+    }
+
+    /// Sets what a session's agent may do without asking: `ask`, `auto` or
+    /// `all`.
+    pub fn set_permissions(&self, id: &str, permissions: &str) -> Result<(), String> {
+        let permissions: Permissions =
+            serde_json::from_value(json!(permissions)).map_err(|e| e.to_string())?;
+        self.send(ClientMsg::SetPermissions {
+            id: id.into(),
+            permissions,
+        });
+        Ok(())
+    }
+
+    /// Asks the daemon for an agent's models; they show up in the snapshot.
+    pub fn models(&self, provider: &str) {
+        self.shared.edit(|s| {
+            let m = s.models.entry(provider.into()).or_default();
+            m.loading = true;
+            m.error = None;
+        });
+        self.send(ClientMsg::Models {
+            provider: provider.into(),
+        });
+    }
+
     pub fn open(&self, id: &str) {
         self.shared.opened.lock().unwrap().insert(id.into());
         self.send(ClientMsg::Open { id: id.into() });
@@ -234,8 +276,9 @@ impl Controller {
     }
 
     /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
-    /// whether each is installed), `default_agent`, `sessions` (most
-    /// recent first), `transcription` (`url`, `model` and `key` of the
+    /// whether each is installed), `default_agent`, `models` (by agent:
+    /// `items`, `error` and `loading`), `sessions` (most recent first, each
+    /// with its `model` and `permissions`), `transcription` (`url`, `model` and `key` of the
     /// speech-to-text service, or null), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {
@@ -245,6 +288,7 @@ impl Controller {
         o.insert("projects".into(), json!(s.projects));
         o.insert("agents".into(), json!(s.agents));
         o.insert("default_agent".into(), json!(s.default_agent));
+        o.insert("models".into(), json!(s.models));
         o.insert("sessions".into(), json!(s.sessions));
         o.insert("transcription".into(), json!(s.transcription));
         o.insert("messages".into(), json!(s.messages));
@@ -395,6 +439,20 @@ fn apply(shared: &Shared, msg: ServerMsg) {
         ServerMsg::Agents { items, default } => {
             s.agents = items;
             s.default_agent = default;
+        }
+        ServerMsg::Models {
+            provider,
+            items,
+            error,
+        } => {
+            s.models.insert(
+                provider,
+                Models {
+                    items,
+                    error,
+                    loading: false,
+                },
+            );
         }
         ServerMsg::Transcription { config } => s.transcription = config,
         ServerMsg::Sessions { items } => s.sessions = items,

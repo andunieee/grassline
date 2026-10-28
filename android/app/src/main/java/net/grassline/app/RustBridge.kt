@@ -25,6 +25,14 @@ object RustBridge {
 
     /** Switches a session to another agent; it starts a new conversation. */
     @JvmStatic external fun setAgent(id: String, provider: String)
+    /** Sets a session's model (an [AgentModel.id]) from its next message on. */
+    @JvmStatic external fun setModel(id: String, model: String)
+
+    /** Sets what a session's agent may do without asking: ask, auto or all. */
+    @JvmStatic external fun setPermissions(id: String, permissions: String)
+
+    /** Asks for an agent's models; they arrive in [AppState.models]. */
+    @JvmStatic external fun models(provider: String)
     @JvmStatic external fun open(id: String)
     @JvmStatic external fun send(id: String, text: String)
     @JvmStatic external fun stop(id: String)

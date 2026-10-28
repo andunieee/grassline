@@ -105,13 +105,35 @@ impl Answer {
     }
 }
 
+/// What the agent may do without asking. It can still ask questions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Permissions {
+    /// It asks before every tool that needs permission.
+    #[default]
+    Ask,
+    /// It decides by itself what is safe, and asks (or refuses) the rest:
+    /// Claude's auto mode, Codex's sandbox, and edits only for opencode.
+    Auto,
+    /// It never asks.
+    All,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Overrides the binary to run (a path, or a name looked up in `PATH`).
     pub binary: Option<String>,
-    /// Lets the agent act without asking for permission. It can still ask
-    /// questions.
-    pub auto_approve: bool,
+    pub permissions: Permissions,
+    /// A model id from [`Provider::models`]; empty for the agent's default.
+    pub model: String,
+}
+
+/// A model an agent can use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Model {
+    /// What [`Options::model`] takes; empty for the agent's default.
+    pub id: String,
+    pub name: String,
+    pub description: String,
 }
 
 /// What a turn is started with.
@@ -120,7 +142,8 @@ struct Start {
     /// The id from [`Event::Session`].
     resume: Option<String>,
     cwd: String,
-    auto_approve: bool,
+    permissions: Permissions,
+    model: String,
 }
 
 /// One turn's conversation with the agent process, in its protocol. `w`
@@ -162,12 +185,15 @@ impl Provider {
                 c.args(["--permission-prompt-tool", "stdio"]);
                 c.args([
                     "--permission-mode",
-                    if opts.auto_approve {
-                        "bypassPermissions"
-                    } else {
-                        "default"
+                    match opts.permissions {
+                        Permissions::Ask => "default",
+                        Permissions::Auto => "auto",
+                        Permissions::All => "bypassPermissions",
                     },
                 ]);
+                if !opts.model.is_empty() {
+                    c.args(["--model", &opts.model]);
+                }
                 if let Some(id) = resume {
                     c.args(["--resume", id]);
                 }
@@ -175,9 +201,17 @@ impl Provider {
             Provider::Opencode => {
                 c.arg("acp").arg("--cwd").arg(cwd);
                 // opencode allows everything unless configured otherwise.
-                let ask = if opts.auto_approve { "allow" } else { "ask" };
-                let perm = json!({ "permission": { "edit": ask, "bash": ask, "webfetch": ask } });
-                c.env("OPENCODE_CONFIG_CONTENT", perm.to_string());
+                let (edit, rest) = match opts.permissions {
+                    Permissions::Ask => ("ask", "ask"),
+                    Permissions::Auto => ("allow", "ask"),
+                    Permissions::All => ("allow", "allow"),
+                };
+                let mut cfg =
+                    json!({ "permission": { "edit": edit, "bash": rest, "webfetch": rest } });
+                if !opts.model.is_empty() {
+                    cfg["model"] = json!(opts.model);
+                }
+                c.env("OPENCODE_CONFIG_CONTENT", cfg.to_string());
             }
             Provider::Codex => {
                 c.arg("app-server");
@@ -193,6 +227,87 @@ impl Provider {
         c
     }
 
+    /// The models the agent offers, asked of its binary.
+    pub async fn models(self, opts: &Options) -> Result<Vec<Model>, String> {
+        let bin = self.detect(opts).ok_or("not installed")?;
+        let mut c = Command::new(bin);
+        let mut ask = vec![];
+        match self {
+            Provider::Claude => {
+                c.args(["-p", "--output-format", "stream-json", "--verbose"]);
+                c.args(["--input-format", "stream-json"]);
+                ask.push(json!({
+                    "type": "control_request",
+                    "request_id": "init",
+                    "request": { "subtype": "initialize", "hooks": null },
+                }));
+            }
+            Provider::Opencode => {
+                c.arg("models");
+            }
+            Provider::Codex => {
+                c.arg("app-server");
+                ask.push(codex::initialize());
+            }
+        }
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = c.spawn().map_err(|e| e.to_string())?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+        let read = async {
+            for v in ask {
+                stdin.write_all(format!("{v}\n").as_bytes()).await?;
+            }
+            let mut models = vec![];
+            while let Some(line) = lines.next_line().await? {
+                if self == Provider::Opencode {
+                    models.extend(opencode_model(&line));
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let found = match self {
+                    Provider::Claude => claude::models(&v),
+                    _ => match codex::models(&v)? {
+                        codex::Listing::Next(w) => {
+                            for w in w {
+                                stdin.write_all(format!("{w}\n").as_bytes()).await?;
+                            }
+                            None
+                        }
+                        codex::Listing::Page(page, more) => {
+                            models.extend(page);
+                            if let Some(w) = more {
+                                stdin.write_all(format!("{w}\n").as_bytes()).await?;
+                                None
+                            } else {
+                                Some(std::mem::take(&mut models))
+                            }
+                        }
+                        codex::Listing::None => None,
+                    },
+                };
+                if let Some(found) = found {
+                    return Ok(found);
+                }
+            }
+            Ok::<_, std::io::Error>(models)
+        };
+        let models = tokio::time::timeout(Duration::from_secs(30), read)
+            .await
+            .map_err(|_| "it took too long to answer".to_string())?
+            .map_err(|e| e.to_string())?;
+        let _ = child.kill().await;
+        if models.is_empty() {
+            return Err("it listed no models".into());
+        }
+        Ok(models)
+    }
+
     fn driver(self, start: Start) -> Box<dyn Driver> {
         match self {
             Provider::Claude => Box::new(claude::Claude::new(start)),
@@ -200,6 +315,16 @@ impl Provider {
             Provider::Codex => Box::new(codex::Codex::new(start)),
         }
     }
+}
+
+/// A line of `opencode models`: `provider/model`.
+fn opencode_model(line: &str) -> Option<Model> {
+    let id = line.trim();
+    (id.contains('/') && !id.contains(' ')).then(|| Model {
+        id: id.into(),
+        name: id.into(),
+        description: String::new(),
+    })
 }
 
 fn str_of<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
@@ -294,7 +419,8 @@ impl Turn {
             prompt: prompt.into(),
             resume: resume.map(Into::into),
             cwd: cwd.to_string_lossy().into_owned(),
-            auto_approve: opts.auto_approve,
+            permissions: opts.permissions,
+            model: opts.model.clone(),
         });
         let mut turn = Turn {
             child,
@@ -412,6 +538,7 @@ fn test_start(resume: Option<&str>) -> Start {
         prompt: "hi".into(),
         resume: resume.map(Into::into),
         cwd: "/p".into(),
-        auto_approve: false,
+        permissions: Permissions::Ask,
+        model: String::new(),
     }
 }

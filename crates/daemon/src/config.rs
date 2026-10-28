@@ -1,5 +1,6 @@
 //! The daemon's settings, kept as JSON and edited from the admin interface.
 
+use grassline_proto::Permissions;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -11,9 +12,12 @@ pub struct Config {
     /// Directories that are projects themselves.
     pub project_dirs: Vec<String>,
     pub default_provider: String,
-    /// Lets agents run tools without asking. Otherwise they ask the paired
-    /// app.
-    pub auto_approve: bool,
+    /// What the agents of new sessions may do without asking; the app
+    /// changes it for each session.
+    pub permissions: Permissions,
+    /// The model new sessions use, by provider name; the last one the app
+    /// picked.
+    pub models: std::collections::BTreeMap<String, String>,
     /// Overrides for the agent binaries, by provider name.
     pub binaries: std::collections::BTreeMap<String, String>,
     pub admin_http: Listener,
@@ -116,7 +120,8 @@ impl Default for Config {
             project_roots: vec![],
             project_dirs: vec![],
             default_provider: "claude".into(),
-            auto_approve: false,
+            permissions: Permissions::Ask,
+            models: Default::default(),
             binaries: Default::default(),
             // Localhost only until the admin says otherwise.
             admin_http: Listener {
@@ -134,10 +139,20 @@ impl Default for Config {
 impl Config {
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                eprintln!("{}: {e}; using defaults", path.display());
-                Config::default()
-            }),
+            Ok(s) => {
+                let parsed = serde_json::from_str::<serde_json::Value>(&s).and_then(|v| {
+                    let mut c: Config = serde_json::from_value(v.clone())?;
+                    // It was a switch before.
+                    if v.get("permissions").is_none() && v["auto_approve"] == true {
+                        c.permissions = Permissions::All;
+                    }
+                    Ok(c)
+                });
+                parsed.unwrap_or_else(|e| {
+                    eprintln!("{}: {e}; using defaults", path.display());
+                    Config::default()
+                })
+            }
             Err(_) => Config::default(),
         }
     }
@@ -161,7 +176,7 @@ impl Config {
                 .get(provider.name())
                 .cloned()
                 .filter(|b| !b.is_empty()),
-            auto_approve: self.auto_approve,
+            ..Default::default()
         }
     }
 }
@@ -190,6 +205,18 @@ pub fn data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_approve_becomes_all() {
+        let dir = std::env::temp_dir().join(format!("grassline-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"auto_approve":true}"#).unwrap();
+        assert_eq!(Config::load(&path).permissions, Permissions::All);
+        std::fs::write(&path, r#"{"auto_approve":true,"permissions":"auto"}"#).unwrap();
+        assert_eq!(Config::load(&path).permissions, Permissions::Auto);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn transcription_needs_a_key_and_a_model() {

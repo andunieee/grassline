@@ -7,6 +7,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 
 pub async fn serve(
     core: Arc<Core>,
@@ -57,6 +58,8 @@ pub async fn serve(
     let mut updates = core.subscribe();
     let mut changes = core.watch_config();
     let mut opened = HashSet::<String>::new();
+    // Answers that take a while, like the models.
+    let (later, mut late) = mpsc::unbounded_channel::<ServerMsg>();
     write(
         &mut send,
         &ServerMsg::Projects {
@@ -74,17 +77,18 @@ pub async fn serve(
     )
     .await?;
     if let Some(m) = pending {
-        handle(&core, &mut send, &mut opened, m).await?;
+        handle(&core, &mut send, &mut opened, &later, m).await?;
     }
     loop {
         tokio::select! {
             line = lines.read_line(&mut recv) => {
                 let Some(line) = line? else { return Ok(()) };
                 match parse::<ClientMsg>(&line) {
-                    Ok(m) => handle(&core, &mut send, &mut opened, m).await?,
+                    Ok(m) => handle(&core, &mut send, &mut opened, &later, m).await?,
                     Err(e) => write(&mut send, &ServerMsg::Error { message: e.to_string() }).await?,
                 }
             }
+            Some(m) = late.recv() => write(&mut send, &m).await?,
             u = updates.recv() => match u {
                 Ok(Update::Session(info)) => write(&mut send, &ServerMsg::Session { info }).await?,
                 Ok(Update::Removed(id)) => {
@@ -125,6 +129,7 @@ async fn handle(
     core: &Arc<Core>,
     send: &mut SendStream,
     opened: &mut HashSet<String>,
+    later: &mpsc::UnboundedSender<ServerMsg>,
     msg: ClientMsg,
 ) -> Result<(), String> {
     let err = |message: String| ServerMsg::Error { message };
@@ -158,6 +163,30 @@ async fn handle(
             if let Err(e) = core.set_agent(&id, &provider) {
                 write(send, &err(e)).await?;
             }
+        }
+        ClientMsg::SetModel { id, model } => {
+            if let Err(e) = core.set_model(&id, &model) {
+                write(send, &err(e)).await?;
+            }
+        }
+        ClientMsg::SetPermissions { id, permissions } => {
+            if let Err(e) = core.set_permissions(&id, permissions) {
+                write(send, &err(e)).await?;
+            }
+        }
+        ClientMsg::Models { provider } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                let (items, error) = match core.models(&provider).await {
+                    Ok(items) => (items, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                let _ = later.send(ServerMsg::Models {
+                    provider,
+                    items,
+                    error,
+                });
+            });
         }
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {

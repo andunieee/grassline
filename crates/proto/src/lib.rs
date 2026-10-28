@@ -114,6 +114,31 @@ pub struct Agent {
     pub installed: bool,
 }
 
+/// A model an agent can use.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Model {
+    /// What [`ClientMsg::SetModel`] takes; empty for the agent's default.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// What the agent of a session may do without asking. It can still ask
+/// questions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Permissions {
+    /// It asks before every tool that needs permission.
+    #[default]
+    Ask,
+    /// It decides by itself what is safe and asks for the rest (how depends
+    /// on the agent).
+    Auto,
+    /// It never asks.
+    All,
+}
+
 /// Where the controller sends voice messages to be turned into text: an
 /// OpenAI-style `audio/transcriptions` endpoint, called from the controller
 /// itself, so the audio does not go through the daemon.
@@ -140,6 +165,11 @@ pub struct SessionInfo {
     /// The agent waits for a decision.
     #[serde(default)]
     pub waiting: bool,
+    /// A [`Model::id`]; empty for the agent's default.
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub permissions: Permissions,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +194,22 @@ pub enum ClientMsg {
     /// with it: the agent does not see the earlier messages.
     SetAgent {
         id: String,
+        provider: String,
+    },
+    /// Sets the model of session `id` from its next message on; new
+    /// sessions with the same agent get it too.
+    SetModel {
+        id: String,
+        model: String,
+    },
+    /// Sets what the agent of session `id` may do without asking, from its
+    /// next message on.
+    SetPermissions {
+        id: String,
+        permissions: Permissions,
+    },
+    /// Asks for the models of an agent; answered with [`ServerMsg::Models`].
+    Models {
         provider: String,
     },
     /// Starts receiving the messages of a session.
@@ -200,6 +246,12 @@ pub enum ServerMsg {
     Agents {
         items: Vec<Agent>,
         default: String,
+    },
+    /// The models of an agent, or why they could not be listed.
+    Models {
+        provider: String,
+        items: Vec<Model>,
+        error: Option<String>,
     },
     /// How to turn voice messages into text; `None` when it is not set up.
     Transcription {

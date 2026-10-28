@@ -5,13 +5,14 @@
 //! commands, file changes and extra permissions, and for answers to its
 //! questions (`item/tool/requestUserInput`).
 
-use crate::{str_of, tool, Answer, Choice, Driver, Event, Question, Start};
+use crate::{str_of, tool, Answer, Choice, Driver, Event, Model, Permissions, Question, Start};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 
 const INIT: u64 = 1;
 const THREAD: u64 = 2;
 const TURN: u64 = 3;
+const MODELS: u64 = 4;
 
 /// What a waiting request is, to answer it in its shape.
 enum Kind {
@@ -42,17 +43,21 @@ impl Codex {
         }
     }
 
-    /// The approval policy and sandbox, as thread parameters.
+    /// The approval policy, sandbox and model, as thread parameters.
     fn policy(&self) -> Map<String, Value> {
-        let (approval, sandbox) = if self.start.auto_approve {
-            ("never", "danger-full-access")
-        } else {
-            ("untrusted", "workspace-write")
+        let (approval, sandbox) = match self.start.permissions {
+            Permissions::Ask => ("untrusted", "workspace-write"),
+            // It runs what it can in the sandbox, and asks to leave it.
+            Permissions::Auto => ("on-request", "workspace-write"),
+            Permissions::All => ("never", "danger-full-access"),
         };
         let mut m = Map::new();
         m.insert("cwd".into(), json!(self.start.cwd));
         m.insert("approvalPolicy".into(), json!(approval));
         m.insert("sandbox".into(), json!(sandbox));
+        if !self.start.model.is_empty() {
+            m.insert("model".into(), json!(self.start.model));
+        }
         m
     }
 }
@@ -61,16 +66,66 @@ fn request(id: u64, method: &str, params: Value) -> Value {
     json!({ "id": id, "method": method, "params": params })
 }
 
+pub(crate) fn initialize() -> Value {
+    request(
+        INIT,
+        "initialize",
+        json!({
+            "clientInfo": { "name": "grassline", "title": null, "version": env!("CARGO_PKG_VERSION") },
+            "capabilities": { "experimentalApi": true, "requestAttestation": false },
+        }),
+    )
+}
+
+/// Where listing the models is, after a line of the app server.
+pub(crate) enum Listing {
+    /// Write these.
+    Next(Vec<Value>),
+    /// A page of models, and the request for the next one if there is one.
+    Page(Vec<Model>, Option<Value>),
+    None,
+}
+
+/// Lists the models (`model/list`) after [`initialize`].
+pub(crate) fn models(v: &Value) -> std::io::Result<Listing> {
+    if v.get("method").is_some() {
+        return Ok(Listing::None);
+    }
+    if let Some(e) = v.get("error") {
+        let why = str_of(e, &["message"]).unwrap_or("the agent failed");
+        return Err(std::io::Error::other(why.to_string()));
+    }
+    Ok(match v["id"].as_u64() {
+        Some(INIT) => Listing::Next(vec![
+            json!({ "method": "initialized" }),
+            request(MODELS, "model/list", json!({})),
+        ]),
+        Some(MODELS) => {
+            let r = &v["result"];
+            let page = r["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| {
+                    let id = str_of(m, &["model"]).or(str_of(m, &["id"]))?;
+                    Some(Model {
+                        id: id.into(),
+                        name: str_of(m, &["displayName"]).unwrap_or(id).into(),
+                        description: s(m, "description"),
+                    })
+                })
+                .collect();
+            let next = str_of(r, &["nextCursor"])
+                .map(|c| request(MODELS, "model/list", json!({ "cursor": c })));
+            Listing::Page(page, next)
+        }
+        _ => Listing::None,
+    })
+}
+
 impl Driver for Codex {
     fn start(&mut self, w: &mut Vec<Value>) {
-        w.push(request(
-            INIT,
-            "initialize",
-            json!({
-                "clientInfo": { "name": "grassline", "title": null, "version": env!("CARGO_PKG_VERSION") },
-                "capabilities": { "experimentalApi": true, "requestAttestation": false },
-            }),
-        ));
+        w.push(initialize());
     }
 
     fn line(&mut self, v: Value, w: &mut Vec<Value>) -> Vec<Event> {
@@ -411,6 +466,24 @@ mod tests {
         let mut w = vec![];
         d.answer("7", Answer::allow(), &mut w);
         assert_eq!(w[0], json!({ "id": 7, "result": { "decision": "accept" } }));
+    }
+
+    #[test]
+    fn listing_models() {
+        let Listing::Next(w) = models(&json!({ "id": 1, "result": {} })).unwrap() else {
+            panic!()
+        };
+        assert_eq!(w[1]["method"], "model/list");
+        let page = json!({ "id": 4, "result": {
+            "data": [{ "id": "a", "model": "gpt-a", "displayName": "GPT A", "description": "fast" }],
+            "nextCursor": "c2",
+        }});
+        let Listing::Page(page, Some(next)) = models(&page).unwrap() else {
+            panic!()
+        };
+        assert_eq!(page[0].id, "gpt-a");
+        assert_eq!(page[0].name, "GPT A");
+        assert_eq!(next["params"]["cursor"], "c2");
     }
 
     #[test]
