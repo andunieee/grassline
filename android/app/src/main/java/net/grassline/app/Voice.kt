@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -184,6 +185,13 @@ fun rememberVoice(onText: (String) -> Unit): VoiceState {
     }
     voice.askPermission = { ask.launch(Manifest.permission.RECORD_AUDIO) }
     DisposableEffect(Unit) { onDispose { voice.cancel() } }
+    // A locked phone stops the app from hearing the microphone: keep the screen on while recording.
+    val view = LocalView.current
+    val recording = voice.phase == VoicePhase.Recording
+    DisposableEffect(recording) {
+        view.keepScreenOn = recording
+        onDispose { view.keepScreenOn = false }
+    }
     return voice
 }
 
