@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -488,7 +489,7 @@ fun Bubble(sessionId: String, m: ChatMessage) {
     when (m.role) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.widthIn(max = 320.dp)) {
-                Text(m.text, Modifier.padding(12.dp))
+                SelectionContainer { Text(m.text, Modifier.padding(12.dp)) }
             }
         }
         "tool" -> {
@@ -500,8 +501,8 @@ fun Bubble(sessionId: String, m: ChatMessage) {
                 else -> ToolLine(m.text, t)
             }
         }
-        "error" -> Text(m.text, color = MaterialTheme.colorScheme.error)
-        else -> Markdown(m.text)
+        "error" -> SelectionContainer { Text(m.text, color = MaterialTheme.colorScheme.error) }
+        else -> SelectionContainer { Markdown(m.text) }
     }
 }
 
@@ -533,11 +534,13 @@ fun ToolLine(summary: String, t: ToolCall) {
 @Composable
 fun Code(text: String, maxLines: Int = 30) {
     Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        Text(
-            text, Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),
-            style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
-            maxLines = maxLines, overflow = TextOverflow.Clip, softWrap = false,
-        )
+        SelectionContainer {
+            Text(
+                text, Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),
+                style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+                maxLines = maxLines, overflow = TextOverflow.Clip, softWrap = false,
+            )
+        }
     }
 }
 
