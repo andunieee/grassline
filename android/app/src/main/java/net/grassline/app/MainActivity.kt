@@ -73,6 +73,10 @@ fun rememberCoreState(): State<AppState> {
 @Composable
 fun App(link: String?, onLinkUsed: () -> Unit) {
     val state by rememberCoreState()
+    if (state.status == "outdated") {
+        OutdatedScreen(state.reason)
+        return
+    }
     if (state.status == "unpaired" || state.status == "refused") {
         PairScreen(state, link, onLinkUsed)
         return
@@ -156,6 +160,18 @@ fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
             onClick = { pair(ticket) },
             enabled = ticket.isNotBlank(),
         ) { Text("Pair") }
+    }
+}
+
+/** The daemon speaks a newer protocol than this app. */
+@Composable
+fun OutdatedScreen(version: String?) {
+    Column(Modifier.fillMaxSize().padding(24.dp).systemBarsPadding(), verticalArrangement = Arrangement.Center) {
+        Image(painterResource(R.drawable.logo), null, Modifier.size(72.dp))
+        Spacer(Modifier.height(16.dp))
+        Text("Update the app", style = MaterialTheme.typography.headlineLarge)
+        Spacer(Modifier.height(16.dp))
+        Text("The daemon on your computer is newer than this app (protocol version ${version ?: "?"}), so they can't talk. Install the latest app to connect again.")
     }
 }
 

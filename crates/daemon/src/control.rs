@@ -2,7 +2,7 @@
 //! one iroh stream.
 
 use crate::core::{Core, Update};
-use grassline_proto::{parse, to_line, ClientMsg, ServerMsg};
+use grassline_proto::{encode, ClientMsg, Frames, ServerMsg};
 use iroh::endpoint::{RecvStream, SendStream};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -15,12 +15,10 @@ pub async fn serve(
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> Result<(), String> {
-    let mut lines = crate::lines::Lines::default();
-    let first = lines
-        .read_line(&mut recv)
+    let mut frames = Frames::default();
+    let msg = read(&mut frames, &mut recv)
         .await?
-        .ok_or("closed before saying anything")?;
-    let msg: ClientMsg = parse(&first).map_err(|e| e.to_string())?;
+        .ok_or("closed before saying anything")??;
 
     let mut pending = None;
     let hello = if let ClientMsg::Pair { token, name } = &msg {
@@ -81,11 +79,11 @@ pub async fn serve(
     }
     loop {
         tokio::select! {
-            line = lines.read_line(&mut recv) => {
-                let Some(line) = line? else { return Ok(()) };
-                match parse::<ClientMsg>(&line) {
+            m = read(&mut frames, &mut recv) => {
+                let Some(m) = m? else { return Ok(()) };
+                match m {
                     Ok(m) => handle(&core, &mut send, &mut opened, &later, m).await?,
-                    Err(e) => write(&mut send, &ServerMsg::Error { message: e.to_string() }).await?,
+                    Err(message) => write(&mut send, &ServerMsg::Error { message }).await?,
                 }
             }
             Some(m) = late.recv() => write(&mut send, &m).await?,
@@ -240,8 +238,24 @@ fn transcription(core: &Core) -> ServerMsg {
     }
 }
 
+/// The next message, or `None` at the end of the stream; the inner error is
+/// a message that does not decode. Cancel-safe.
+async fn read(
+    frames: &mut Frames,
+    recv: &mut RecvStream,
+) -> Result<Option<Result<ClientMsg, String>>, String> {
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        if let Some(m) = frames.next() {
+            return Ok(Some(m));
+        }
+        match recv.read(&mut buf).await.map_err(|e| e.to_string())? {
+            Some(n) => frames.push(&buf[..n])?,
+            None => return Ok(None),
+        }
+    }
+}
+
 async fn write(send: &mut SendStream, m: &ServerMsg) -> Result<(), String> {
-    send.write_all(to_line(m).as_bytes())
-        .await
-        .map_err(|e| e.to_string())
+    send.write_all(&encode(m)).await.map_err(|e| e.to_string())
 }

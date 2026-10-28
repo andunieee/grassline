@@ -1,15 +1,36 @@
 //! The wire protocol between the daemon and a remote controller.
 //!
-//! The controller connects over iroh with the ALPN [`ALPN`] and opens one
-//! bidirectional stream. Both directions carry JSON lines: [`ClientMsg`] from
-//! the controller and [`ServerMsg`] from the daemon. The controller is
+//! The controller connects over iroh with the ALPN of [`VERSION`] and opens one
+//! bidirectional stream. Both directions carry [frames](encode): [`ClientMsg`]
+//! from the controller and [`ServerMsg`] from the daemon. The controller is
 //! identified by its iroh endpoint key; a key the daemon does not know must
 //! open with [`ClientMsg::Pair`] and a token from the admin interface.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const ALPN: &[u8] = b"grassline/0";
+/// The version of the protocol, in its ALPN. Bump it whenever a message
+/// changes: the daemon then tells controllers of older versions to update.
+pub const VERSION: u32 = 1;
+
+/// The code the daemon closes a connection of an older version with; the
+/// reason is its own [`VERSION`].
+pub const OUTDATED: u32 = 1;
+
+/// The ALPN of a version: `grassline/<version>`.
+pub fn alpn(version: u32) -> Vec<u8> {
+    format!("grassline/{version}").into_bytes()
+}
+
+/// The version of an ALPN of [`alpn`].
+pub fn alpn_version(alpn: &[u8]) -> Option<u32> {
+    std::str::from_utf8(alpn)
+        .ok()?
+        .strip_prefix("grassline/")?
+        .parse()
+        .ok()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,7 +49,7 @@ pub struct Message {
     pub text: String,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tool: Option<ToolCall>,
 }
 
@@ -173,7 +194,7 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ClientMsg {
     Pair {
         token: String,
@@ -232,7 +253,7 @@ pub enum ClientMsg {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ServerMsg {
     /// The answer to the first message: whether the key is let in.
     Hello {
@@ -280,14 +301,43 @@ pub enum ServerMsg {
     },
 }
 
-pub fn to_line<T: Serialize>(m: &T) -> String {
-    let mut s = serde_json::to_string(m).expect("serializable");
-    s.push('\n');
-    s
+/// The most a stream may hold back before a frame is whole.
+const MAX_PENDING: usize = 4 << 20;
+
+/// `m` as a frame: its length as a little-endian `u32`, then `m` in postcard.
+/// Postcard does not say which fields are there, so both ends must have the
+/// same types: bump [`VERSION`] when they change.
+pub fn encode<T: Serialize>(m: &T) -> Vec<u8> {
+    let body = postcard::to_allocvec(m).expect("serializable");
+    let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+    frame.extend_from_slice(&body);
+    frame
 }
 
-pub fn parse<'a, T: Deserialize<'a>>(line: &'a str) -> Result<T, serde_json::Error> {
-    serde_json::from_str(line.trim())
+/// The frames in the bytes of a stream.
+#[derive(Default)]
+pub struct Frames(Vec<u8>);
+
+impl Frames {
+    /// Adds bytes read from the stream; fails when too many wait for the rest
+    /// of their frame.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if self.0.len() + bytes.len() > MAX_PENDING {
+            return Err("frame too long".into());
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// The next whole frame, decoded; it is taken out even when it does not
+    /// decode.
+    pub fn next<T: DeserializeOwned>(&mut self) -> Option<Result<T, String>> {
+        let len = u32::from_le_bytes(self.0.get(..4)?.try_into().unwrap()) as usize;
+        let body = self.0.get(4..4 + len)?;
+        let m = postcard::from_bytes(body).map_err(|e| e.to_string());
+        self.0.drain(..4 + len);
+        Some(m)
+    }
 }
 
 /// The text a controller scans or pastes to pair: `grassline:<endpoint id>:<token>`.
@@ -307,31 +357,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lines_round_trip() {
-        let m = ClientMsg::Send {
+    fn frames_round_trip() {
+        let a = ClientMsg::Send {
             id: "a".into(),
             text: "hi".into(),
         };
-        let line = to_line(&m);
-        assert_eq!(line, "{\"t\":\"send\",\"id\":\"a\",\"text\":\"hi\"}\n");
-        assert_eq!(parse::<ClientMsg>(&line).unwrap(), m);
+        let b = ClientMsg::Refresh;
+        let bytes = [encode(&a), encode(&b)].concat();
+        let mut frames = Frames::default();
+        // A byte at a time, as a stream may cut them.
+        let mut got = vec![];
+        for byte in &bytes {
+            frames.push(&[*byte]).unwrap();
+            while let Some(m) = frames.next::<ClientMsg>() {
+                got.push(m.unwrap());
+            }
+        }
+        assert_eq!(got, [a, b]);
+    }
+
+    #[test]
+    fn bad_frames_are_skipped() {
+        let mut frames = Frames::default();
+        frames.push(&[1, 0, 0, 0, 255]).unwrap();
+        frames.push(&encode(&ClientMsg::Refresh)).unwrap();
+        assert!(frames.next::<ClientMsg>().unwrap().is_err());
+        assert_eq!(frames.next::<ClientMsg>().unwrap(), Ok(ClientMsg::Refresh));
+        assert!(frames.next::<ClientMsg>().is_none());
     }
 
     #[test]
     fn decisions_default() {
-        let m: ClientMsg =
-            parse(r#"{"t":"decide","id":"a","request":"r","decision":{"allow":true}}"#).unwrap();
+        let d: Decision = serde_json::from_str(r#"{"allow":true}"#).unwrap();
         assert_eq!(
-            m,
-            ClientMsg::Decide {
-                id: "a".into(),
-                request: "r".into(),
-                decision: Decision {
-                    allow: true,
-                    ..Default::default()
-                }
+            d,
+            Decision {
+                allow: true,
+                ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn alpns() {
+        assert_eq!(alpn_version(&alpn(VERSION)), Some(VERSION));
+        assert_eq!(alpn_version(b"grassline/x"), None);
+        assert_eq!(alpn_version(b"hyperb/0"), None);
     }
 
     #[test]

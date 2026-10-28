@@ -1,20 +1,20 @@
 //! The daemon's iroh endpoint. One identity serves the remote controllers
-//! (ALPN `grassline/0`) and, if the admin turned it on, the admin interface
-//! to the allowed keys (ALPN `hyperb/0`).
+//! (ALPN `grassline/<version>`, every version so the old ones can be told to
+//! update) and, if the admin turned it on, the admin interface to the allowed
+//! keys (ALPN `hyperb/0`).
 
 use crate::core::Core;
 use crate::hyperb::{iroh_alpn_path, Identity, IROH_ALPN};
 use crate::{admin, control};
+use grassline_proto::{alpn_version, OUTDATED, VERSION};
 use iroh::endpoint::{presets, Connection, Incoming};
 use iroh::{Endpoint, SecretKey};
 use std::sync::Arc;
 
 pub async fn serve(core: Arc<Core>, identity: Identity) {
-    let alpns = vec![
-        grassline_proto::ALPN.to_vec(),
-        IROH_ALPN.as_bytes().to_vec(),
-        format!("{IROH_ALPN}/admin").into_bytes(),
-    ];
+    let mut alpns: Vec<Vec<u8>> = (0..=VERSION).map(grassline_proto::alpn).collect();
+    alpns.push(IROH_ALPN.as_bytes().to_vec());
+    alpns.push(format!("{IROH_ALPN}/admin").into_bytes());
     let endpoint = match Endpoint::builder(presets::N0)
         .secret_key(SecretKey::from_bytes(&identity.secret()))
         .alpns(alpns)
@@ -52,15 +52,45 @@ async fn session(core: Arc<Core>, incoming: Incoming) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let key = conn.remote_id().to_string();
     let alpn = conn.alpn().to_vec();
-    if alpn == grassline_proto::ALPN {
-        let (send, recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
-        let result = control::serve(core, key, send, recv).await;
-        // Let the last bytes out before the connection goes away.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
-        return result;
+    match alpn_version(&alpn) {
+        Some(VERSION) => {}
+        Some(0) => return refuse_unversioned(conn).await,
+        Some(_) => {
+            conn.close(OUTDATED.into(), VERSION.to_string().as_bytes());
+            return Err(format!("{key} speaks an older protocol"));
+        }
+        None => return serve_admin(core, conn, key, &alpn).await,
     }
-    // The admin interface: only the keys the admin allowed.
-    let path = iroh_alpn_path(&alpn).ok_or("unknown protocol")?;
+    let (send, recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+    let result = control::serve(core, key, send, recv).await;
+    // Let the last bytes out before the connection goes away.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
+    result
+}
+
+/// The apps from before the versions speak JSON lines and do not know
+/// [`OUTDATED`], but show why a pairing was refused.
+async fn refuse_unversioned(conn: Connection) -> Result<(), String> {
+    let (mut send, _recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+    let hello = format!(
+        r#"{{"t":"hello","ok":false,"error":"The daemon is on version {VERSION}: update the app."}}"#
+    );
+    send.write_all(format!("{hello}\n").as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = send.finish();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
+    Err("an app from before the versions connected".into())
+}
+
+/// The admin interface: only the keys the admin allowed.
+async fn serve_admin(
+    core: Arc<Core>,
+    conn: Connection,
+    key: String,
+    alpn: &[u8],
+) -> Result<(), String> {
+    let path = iroh_alpn_path(alpn).ok_or("unknown protocol")?;
     if !matches!(path.trim_matches('/'), "" | "admin") {
         return Err("no app here".into());
     }

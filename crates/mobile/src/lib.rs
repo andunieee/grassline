@@ -6,10 +6,10 @@
 mod jni_bridge;
 
 use grassline_proto::{
-    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Model, Permissions, Project,
-    ServerMsg, SessionInfo, Transcription, ALPN,
+    encode, parse_ticket, Agent, ClientMsg, Frames, Message, Model, Permissions, Project,
+    ServerMsg, SessionInfo, Transcription, OUTDATED, VERSION,
 };
-use iroh::endpoint::presets;
+use iroh::endpoint::{presets, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointId, SecretKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,6 +30,9 @@ pub enum Status {
     Offline(String),
     /// Pairing was refused.
     Refused(String),
+    /// The daemon is on this newer version of the protocol: the app must be
+    /// updated.
+    Outdated(u32),
 }
 
 #[derive(Default)]
@@ -353,6 +356,7 @@ async fn connection_loop(
         *shared.out.lock().unwrap() = None;
         match result {
             Err(Fail::Refused(why)) => return shared.status(Status::Refused(why)),
+            Err(Fail::Outdated(version)) => return shared.status(Status::Outdated(version)),
             Err(Fail::Other(why)) => shared.status(Status::Offline(why)),
             Ok(()) => shared.status(Status::Offline("the daemon closed the connection".into())),
         }
@@ -363,6 +367,7 @@ async fn connection_loop(
 
 enum Fail {
     Refused(String),
+    Outdated(u32),
     Other(String),
 }
 
@@ -380,7 +385,27 @@ async fn session(
     dir: &Path,
     pairing: &mut Option<(String, String)>,
 ) -> Result<(), Fail> {
-    let conn = endpoint.connect(id, ALPN).await?;
+    let conn = endpoint
+        .connect(id, &grassline_proto::alpn(VERSION))
+        .await?;
+    let result = talk(shared, &conn, endpoint_id, dir, pairing).await;
+    // A daemon on a newer version closes right away and says which.
+    if let Some(ConnectionError::ApplicationClosed(c)) = conn.close_reason() {
+        if c.error_code == OUTDATED.into() {
+            let version = String::from_utf8_lossy(&c.reason).parse().unwrap_or(0);
+            return Err(Fail::Outdated(version));
+        }
+    }
+    result
+}
+
+async fn talk(
+    shared: &Arc<Shared>,
+    conn: &Connection,
+    endpoint_id: &str,
+    dir: &Path,
+    pairing: &mut Option<(String, String)>,
+) -> Result<(), Fail> {
     let (mut send, mut recv) = conn.open_bi().await?;
     let paired_now = pairing.is_some();
     let first = match pairing.clone() {
@@ -388,7 +413,7 @@ async fn session(
         None => ClientMsg::Refresh,
     };
     // The stream reaches the daemon with its first bytes.
-    send.write_all(to_line(&first).as_bytes()).await?;
+    send.write_all(&encode(&first)).await?;
     let (tx, mut rx) = mpsc::unbounded_channel();
     // Re-open what was open, and say we are here.
     for id in shared.opened.lock().unwrap().iter() {
@@ -396,17 +421,16 @@ async fn session(
     }
     *shared.out.lock().unwrap() = Some(tx);
 
-    let mut pending = Vec::<u8>::new();
+    let mut frames = Frames::default();
     let mut buf = vec![0u8; 16 * 1024];
     let mut hello = false;
     loop {
         tokio::select! {
             n = recv.read(&mut buf) => {
                 let n = n?.ok_or("closed")?;
-                pending.extend_from_slice(&buf[..n]);
-                while let Some(end) = pending.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = pending.drain(..=end).collect();
-                    let Ok(msg) = parse::<ServerMsg>(&String::from_utf8_lossy(&line)) else { continue };
+                frames.push(&buf[..n])?;
+                while let Some(msg) = frames.next::<ServerMsg>() {
+                    let Ok(msg) = msg else { continue };
                     if let ServerMsg::Hello { ok, error } = &msg {
                         if !ok {
                             return Err(Fail::Refused(error.clone().unwrap_or_else(|| "refused".into())));
@@ -426,7 +450,7 @@ async fn session(
             }
             m = rx.recv() => {
                 let Some(m) = m else { return Ok(()) };
-                send.write_all(to_line(&m).as_bytes()).await?;
+                send.write_all(&encode(&m)).await?;
             }
         }
     }

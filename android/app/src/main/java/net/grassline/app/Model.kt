@@ -79,8 +79,9 @@ private fun parseTool(t: JSONObject) = ToolCall(
 
 /** What the Rust core reports (`Controller::snapshot`). */
 data class AppState(
-    /** unpaired, connecting, connected, offline or refused. */
+    /** unpaired, connecting, connected, offline, refused or outdated. */
     val status: String = "connecting",
+    /** Why it is offline or refused; when outdated, the daemon's protocol version. */
     val reason: String? = null,
     val projects: List<Project> = emptyList(),
     val agents: List<Agent> = emptyList(),
