@@ -24,6 +24,12 @@ Claude Code's stream-json, `opencode acp` and `codex app-server`. The app shows 
 agent and the default one (top of the sessions list), and changes either: a new session can pick
 its agent, and switching an existing session to another agent starts a new conversation with it.
 
+Voice messages: admin interface → Voice, pick a speech-to-text service (OpenAI, OpenRouter,
+Groq, Mistral, or any OpenAI-style `audio/transcriptions` endpoint) and give its API
+key. The chat then shows a 🎤 button while the message box is empty: tap to record, Send to
+transcribe and send the text. The phone calls the service itself with that key; the audio never
+goes through the daemon.
+
 Pairing: admin interface → Access → "New pairing code", then "Scan QR code" in the app
 (it uses a scanner app or Google's code scanner when the phone has one, else its own) or paste the
 code. Scanning the QR code with the phone's camera app opens Grassline with the code filled in. Projects:

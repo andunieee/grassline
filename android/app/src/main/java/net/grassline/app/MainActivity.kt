@@ -269,6 +269,8 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
 fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     val messages = state.messages[session.id].orEmpty()
     var draft by remember { mutableStateOf("") }
+    // A voice message goes out as text once it is transcribed.
+    val voice = rememberVoice { RustBridge.send(session.id, it) }
     var agentMenu by remember { mutableStateOf(false) }
     // The agent to switch to, once the user confirms.
     var switchTo by remember { mutableStateOf<String?>(null) }
@@ -298,16 +300,32 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         bottomBar = {
             Column(Modifier.navigationBarsPadding()) {
                 ErrorLine(state)
-                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                    OutlinedTextField(
-                        draft, { draft = it }, Modifier.weight(1f),
-                        placeholder = { Text("Message") }, maxLines = 5,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    if (session.running) {
-                        Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop") }
+                voice.error?.let {
+                    Row(Modifier.fillMaxWidth().clickable { voice.error = null }.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (voice.phase == VoicePhase.Recording) {
+                        TextButton(voice::cancel) { Text("✕") }
+                        RecordingTime(voice.started, Modifier.weight(1f))
                     } else {
-                        Button(
+                        OutlinedTextField(
+                            draft, { draft = it }, Modifier.weight(1f),
+                            placeholder = { Text(if (voice.phase == VoicePhase.Transcribing) "Transcribing…" else "Message") },
+                            maxLines = 5, enabled = voice.phase == VoicePhase.Idle,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    when {
+                        voice.phase == VoicePhase.Recording -> Button(
+                            onClick = { state.transcription?.let(voice::finish) ?: voice.cancel() },
+                            enabled = state.status == "connected",
+                        ) { Text("Send") }
+                        voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        session.running -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop") }
+                        draft.isBlank() && state.transcription != null -> FilledTonalButton(voice::start) { Text("🎤") }
+                        else -> Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
                             enabled = draft.isNotBlank() && state.status == "connected",
                         ) { Text("Send") }

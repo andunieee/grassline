@@ -1,6 +1,7 @@
 //! The admin interface itself.
 
 use super::view::{Tree, View};
+use crate::config::SPEECH_PROVIDERS;
 #[cfg(test)]
 use crate::core::random_hex;
 use crate::core::{now_ms, Core};
@@ -28,6 +29,8 @@ pub struct Admin {
     ticket: Option<(String, String)>,
     /// The last thing that went wrong or was done.
     note: Option<(String, &'static str)>,
+    /// When the note goes away by itself (ms since the epoch).
+    note_until: Option<u64>,
     /// What the renderer has.
     view: View,
 }
@@ -501,6 +504,80 @@ impl Admin {
                     .on_press(Handler::action("set_bin").payload(p.name())),
             );
         }
+
+        // ---- voice
+        out.element(tab("tab-voice").parent("tabs").label("Voice"));
+        out.element(column("voice-body").parent("tab-voice"));
+        out.element(text("v-help").parent("voice-body").variant("caption").text(
+            "Voice messages from the app are turned into text by this service. The app calls it directly with this key: the audio does not go through the daemon.",
+        ));
+        let mut options = vec![json!({ "value": "", "label": "Off" })];
+        options.extend(
+            SPEECH_PROVIDERS
+                .iter()
+                .map(|p| json!({ "value": p.name, "label": p.label })),
+        );
+        options.push(json!({ "value": "custom", "label": "Custom" }));
+        out.element(setting(
+            select("stt")
+                .parent("voice-body")
+                .label("Speech to text")
+                .variant("segmented")
+                .options(Value::Array(options)),
+            "stt",
+            "set_stt",
+        ));
+        let t = &cfg.transcription;
+        if !t.provider.is_empty() {
+            let preset = SPEECH_PROVIDERS.iter().find(|p| p.name == t.provider);
+            out.element(
+                input("stt-key")
+                    .parent("voice-body")
+                    .label("API key")
+                    .bind("stt_key")
+                    .on_submit(Handler::action("set_stt_details")),
+            );
+            out.element(
+                input("stt-model")
+                    .parent("voice-body")
+                    .label("Model")
+                    .placeholder(preset.map_or("whisper-1", |p| p.model))
+                    .bind("stt_model")
+                    .on_submit(Handler::action("set_stt_details")),
+            );
+            if preset.is_none() {
+                out.element(
+                    input("stt-url")
+                        .parent("voice-body")
+                        .label("Endpoint (OpenAI-style audio/transcriptions)")
+                        .placeholder("http://localhost:8000/v1/audio/transcriptions")
+                        .bind("stt_url")
+                        .on_submit(Handler::action("set_stt_details")),
+                );
+            }
+            out.element(row("stt-row").parent("voice-body").justify("between"));
+            out.element(
+                badge("stt-state")
+                    .parent("stt-row")
+                    .variant(if t.resolve().is_some() {
+                        "success"
+                    } else {
+                        "warning"
+                    })
+                    .text(match t.resolve() {
+                        Some(r) => format!("the app uses {}", r.model),
+                        None if preset.is_none() => "needs an endpoint, a model and a key".into(),
+                        None => "needs a key".into(),
+                    }),
+            );
+            out.element(
+                button("stt-save")
+                    .parent("stt-row")
+                    .variant("primary")
+                    .label("Save")
+                    .on_press(Handler::action("set_stt_details")),
+            );
+        }
     }
 
     /// The settings as they are, which every action answers with: it puts
@@ -513,6 +590,7 @@ impl Admin {
             "iroh_on": s(c.admin_iroh.into()),
             "provider": s(c.default_provider.into()),
             "auto": s(c.auto_approve.into()),
+            "stt": s(c.transcription.provider.into()),
         })
     }
 
@@ -531,6 +609,9 @@ impl Admin {
             "new_root": "", "new_dir": "", "new_key": "",
             "http_addr": c.admin_http.addr,
             "bin": bins,
+            "stt_key": c.transcription.key,
+            "stt_model": c.transcription.model,
+            "stt_url": c.transcription.url,
         });
         hypereffect::signals::merge_patch(&mut s, &Self::settings());
         s
@@ -538,6 +619,12 @@ impl Admin {
 
     fn ok(&mut self, msg: impl Into<String>) {
         self.note = Some((msg.into(), "success"));
+    }
+
+    /// A note that goes away after a few seconds.
+    fn flash(&mut self, msg: impl Into<String>) {
+        self.ok(msg);
+        self.note_until = Some(now_ms() + 4000);
     }
 
     fn fail(&mut self, msg: impl Into<String>) {
@@ -563,6 +650,7 @@ impl App for Admin {
     fn action(&mut self, out: &mut Outbox, a: &Action) {
         let payload = a.payload_as::<String>().unwrap_or_default();
         self.note = None;
+        self.note_until = None;
         let core = core();
         match a.name.as_str() {
             "add_root" | "add_dir" => {
@@ -666,6 +754,23 @@ impl App for Admin {
                     }
                 });
             }
+            "set_stt" => {
+                let p = sig(a, "stt.value");
+                core.update_config(|c| c.transcription.provider = p);
+            }
+            "set_stt_details" => {
+                let (key, model, url) = (sig(a, "stt_key"), sig(a, "stt_model"), sig(a, "stt_url"));
+                if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+                    self.fail(format!("{url} is not an http(s) URL"));
+                } else {
+                    core.update_config(|c| {
+                        c.transcription.key = key;
+                        c.transcription.model = model;
+                        c.transcription.url = url;
+                    });
+                    self.flash("Saved");
+                }
+            }
             "stop" => core.stop(&payload),
             "delete" => core.delete_session(&payload),
             _ => return,
@@ -675,6 +780,11 @@ impl App for Admin {
     }
 
     fn tick(&mut self, out: &mut Outbox, _now_ms: f64) {
+        if self.note_until.is_some_and(|t| now_ms() >= t) {
+            self.note = None;
+            self.note_until = None;
+            self.render(out);
+        }
         // A code that was used or expired goes away; a new device shows up.
         if let Some((_, token)) = &self.ticket {
             if !core().token_pending(token) {
@@ -688,7 +798,8 @@ impl App for Admin {
     }
 
     fn tick_interval(&self) -> Option<u32> {
-        Some(2000)
+        // Sooner while a note is about to go away.
+        Some(if self.note_until.is_some() { 250 } else { 2000 })
     }
 }
 
@@ -724,6 +835,17 @@ mod tests {
         l.client.receive(out.as_bytes());
         assert_eq!(l.client.attr("auto", "disabled"), Some(json!(false)));
         assert!(super::core().config().auto_approve);
+
+        // Speech to text asks for a key once a provider is picked.
+        assert_eq!(l.client.attr("stt-key", "bind"), None);
+        l.write("stt.value", json!("groq"));
+        assert!(l.trigger("stt", "onChange"));
+        assert!(l.client.attr("stt-key", "bind").is_some());
+        l.write("stt_key", json!("k"));
+        assert!(l.trigger("stt-save", "onPress"));
+        let t = super::core().config().transcription.resolve().unwrap();
+        assert_eq!(t.model, "whisper-large-v3-turbo");
+        assert!(l.client.take_diagnostics().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

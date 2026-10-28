@@ -19,6 +19,9 @@ data class SessionInfo(
     val waiting: Boolean,
 )
 
+/** The speech-to-text service the daemon set up for voice messages. */
+data class Transcription(val url: String, val model: String, val key: String)
+
 data class Choice(val label: String, val description: String)
 
 data class Question(val question: String, val header: String, val options: List<Choice>, val multi: Boolean)
@@ -75,6 +78,8 @@ data class AppState(
     val defaultAgent: String = "",
     /** Most recent first. */
     val sessions: List<SessionInfo> = emptyList(),
+    /** Null when voice messages are not set up. */
+    val transcription: Transcription? = null,
     val messages: Map<String, List<ChatMessage>> = emptyMap(),
     val error: String? = null,
 ) {
@@ -94,6 +99,9 @@ data class AppState(
                         it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
                         it.optBoolean("waiting"),
                     )
+                },
+                transcription = o.optJSONObject("transcription")?.let {
+                    Transcription(it.getString("url"), it.getString("model"), it.getString("key"))
                 },
                 messages = msgs.keys().asSequence().associateWith { k ->
                     msgs.getJSONArray(k).map {

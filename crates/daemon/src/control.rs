@@ -65,6 +65,7 @@ pub async fn serve(
     )
     .await?;
     write(&mut send, &agents(&core)).await?;
+    write(&mut send, &transcription(&core)).await?;
     write(
         &mut send,
         &ServerMsg::Sessions {
@@ -111,8 +112,10 @@ pub async fn serve(
                     let _ = send.finish();
                     return Ok(());
                 }
-                // The default agent or the agent binaries may have changed.
+                // The default agent, the agent binaries or the
+                // transcription may have changed.
                 write(&mut send, &agents(&core)).await?;
+                write(&mut send, &transcription(&core)).await?;
             }
         }
     }
@@ -136,6 +139,7 @@ async fn handle(
             )
             .await?;
             write(send, &agents(core)).await?;
+            write(send, &transcription(core)).await?;
             write(
                 send,
                 &ServerMsg::Sessions {
@@ -198,6 +202,12 @@ fn agents(core: &Core) -> ServerMsg {
     ServerMsg::Agents {
         items: core.agents(),
         default: core.config().default_provider,
+    }
+}
+
+fn transcription(core: &Core) -> ServerMsg {
+    ServerMsg::Transcription {
+        config: core.config().transcription.resolve(),
     }
 }
 

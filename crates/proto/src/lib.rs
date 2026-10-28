@@ -114,6 +114,18 @@ pub struct Agent {
     pub installed: bool,
 }
 
+/// Where the controller sends voice messages to be turned into text: an
+/// OpenAI-style `audio/transcriptions` endpoint, called from the controller
+/// itself, so the audio does not go through the daemon.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transcription {
+    /// The endpoint's full URL.
+    pub url: String,
+    pub model: String,
+    /// Sent as a bearer token.
+    pub key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -188,6 +200,10 @@ pub enum ServerMsg {
     Agents {
         items: Vec<Agent>,
         default: String,
+    },
+    /// How to turn voice messages into text; `None` when it is not set up.
+    Transcription {
+        config: Option<Transcription>,
     },
     /// Every session, most recently updated first.
     Sessions {

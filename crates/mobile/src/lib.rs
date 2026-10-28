@@ -6,7 +6,8 @@
 mod jni_bridge;
 
 use grassline_proto::{
-    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Project, ServerMsg, SessionInfo, ALPN,
+    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Project, ServerMsg, SessionInfo,
+    Transcription, ALPN,
 };
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -39,6 +40,8 @@ struct State {
     /// The agent new sessions use by default.
     default_agent: String,
     sessions: Vec<SessionInfo>,
+    /// Where voice messages are turned into text, if the daemon set it up.
+    transcription: Option<Transcription>,
     /// The messages of the sessions that were opened.
     messages: HashMap<String, Vec<Message>>,
     /// The last error the daemon reported.
@@ -232,7 +235,8 @@ impl Controller {
 
     /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
     /// whether each is installed), `default_agent`, `sessions` (most
-    /// recent first), `messages` (by session id; a tool call's `tool` has its
+    /// recent first), `transcription` (`url`, `model` and `key` of the
+    /// speech-to-text service, or null), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {
         let s = self.shared.state.lock().unwrap();
@@ -242,6 +246,7 @@ impl Controller {
         o.insert("agents".into(), json!(s.agents));
         o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("sessions".into(), json!(s.sessions));
+        o.insert("transcription".into(), json!(s.transcription));
         o.insert("messages".into(), json!(s.messages));
         o.insert("error".into(), json!(s.error));
         o.insert("key".into(), json!(self.key()));
@@ -391,6 +396,7 @@ fn apply(shared: &Shared, msg: ServerMsg) {
             s.agents = items;
             s.default_agent = default;
         }
+        ServerMsg::Transcription { config } => s.transcription = config,
         ServerMsg::Sessions { items } => s.sessions = items,
         ServerMsg::Session { info } => {
             s.sessions.retain(|i| i.id != info.id);

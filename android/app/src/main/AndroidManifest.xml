@@ -4,6 +4,9 @@
     <!-- Only for our own QR scanner, when the phone has none. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Voice messages. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <queries>
         <!-- QR scanner apps that take the ZXing scan intent. -->
         <intent>
