@@ -130,6 +130,12 @@ impl Controller {
             t.abort();
         }
         let _ = std::fs::remove_file(self.dir.join("daemon.json"));
+        self.forget();
+        self.shared.status(Status::Unpaired);
+    }
+
+    /// Drops what the last daemon told us.
+    fn forget(&self) {
         *self.shared.out.lock().unwrap() = None;
         self.shared.opened.lock().unwrap().clear();
         self.shared.edit(|s| {
@@ -138,12 +144,15 @@ impl Controller {
                 ..Default::default()
             }
         });
-        self.shared.status(Status::Unpaired);
     }
 
     fn connect(&self, endpoint: String, pairing: Option<(String, String)>) {
         if let Some(t) = self.conn_task.lock().unwrap().take() {
             t.abort();
+        }
+        // Pairing may switch to another daemon: its sessions are not ours.
+        if pairing.is_some() {
+            self.forget();
         }
         self.shared.status(Status::Connecting);
         let (shared, secret, dir) = (self.shared.clone(), self.secret.clone(), self.dir.clone());
@@ -217,6 +226,11 @@ impl Controller {
         v.to_string()
     }
 
+    /// The version of the state, bumped on every change.
+    pub fn version(&self) -> u64 {
+        self.shared.state.lock().unwrap().version
+    }
+
     /// Blocks until the state is newer than `seen` (or the timeout); returns
     /// the current version.
     pub fn wait(&self, seen: u64, timeout: Duration) -> u64 {
@@ -263,7 +277,8 @@ async fn connection_loop(
         Err(e) => return shared.status(Status::Offline(e.to_string())),
     };
     loop {
-        let result = session(&shared, &endpoint, id, &endpoint_id, &dir, pairing.take()).await;
+        // The pairing is retried until the daemon answers it.
+        let result = session(&shared, &endpoint, id, &endpoint_id, &dir, &mut pairing).await;
         *shared.out.lock().unwrap() = None;
         match result {
             Err(Fail::Refused(why)) => return shared.status(Status::Refused(why)),
@@ -292,12 +307,12 @@ async fn session(
     id: EndpointId,
     endpoint_id: &str,
     dir: &Path,
-    pairing: Option<(String, String)>,
+    pairing: &mut Option<(String, String)>,
 ) -> Result<(), Fail> {
     let conn = endpoint.connect(id, ALPN).await?;
     let (mut send, mut recv) = conn.open_bi().await?;
     let paired_now = pairing.is_some();
-    let first = match pairing {
+    let first = match pairing.clone() {
         Some((token, name)) => ClientMsg::Pair { token, name },
         None => ClientMsg::Refresh,
     };
@@ -328,6 +343,7 @@ async fn session(
                         hello = true;
                         if paired_now {
                             let _ = std::fs::write(dir.join("daemon.json"), json!({ "endpoint": endpoint_id }).to_string());
+                            *pairing = None;
                         }
                         shared.status(Status::Connected);
                         continue;

@@ -25,6 +25,8 @@ const OUTPUT_MAX: usize = 4000;
 #[derive(Debug, Clone)]
 pub enum Update {
     Session(SessionInfo),
+    /// The session was deleted.
+    Removed(String),
     Msg {
         id: String,
         index: usize,
@@ -168,6 +170,15 @@ impl Core {
         ok
     }
 
+    /// Whether a token can still be used to pair.
+    pub fn token_pending(&self, token: &str) -> bool {
+        self.tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(t, at)| t == token && at.elapsed() < TOKEN_TTL)
+    }
+
     pub fn is_paired(&self, key: &str) -> bool {
         self.config
             .read()
@@ -285,6 +296,7 @@ impl Core {
         self.stop(id);
         self.sessions.lock().unwrap().remove(id);
         let _ = std::fs::remove_file(self.data_dir.join("sessions").join(format!("{id}.json")));
+        let _ = self.updates.send(Update::Removed(id.into()));
     }
 
     pub fn stop(&self, id: &str) {

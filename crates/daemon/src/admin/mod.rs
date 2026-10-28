@@ -3,6 +3,7 @@
 
 mod app;
 mod http;
+mod qr;
 mod run;
 
 use crate::core::Core;

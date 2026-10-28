@@ -22,7 +22,9 @@ that needs permission, or when it asks a question, the call waits in the app for
 asking" skips the permission prompts. Each agent is driven through its interactive protocol:
 Claude Code's stream-json, `opencode acp` and `codex app-server`.
 
-Pairing: admin interface → Remote control → "New pairing code", paste it in the app. Projects:
+Pairing: admin interface → Remote control → "New pairing code", then "Scan QR code" in the app
+(it uses a scanner app or Google's code scanner when the phone has one, else its own) or paste the
+code. Scanning the QR code with the phone's camera app opens Grassline with the code filled in. Projects:
 Projects tab → add a root (each subdirectory is a project) or a single project directory.
 `cargo run -p grassline-mobile --example smoke -- <dir> <ticket|-> <project> <prompt>` is a
 command-line controller that allows everything it is asked (add `deny` to deny instead).

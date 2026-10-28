@@ -61,6 +61,7 @@ pub async fn serve(
     }
 
     let mut updates = core.subscribe();
+    let mut changes = core.watch_config();
     let mut opened = HashSet::<String>::new();
     write(
         &mut send,
@@ -90,6 +91,10 @@ pub async fn serve(
             }
             u = updates.recv() => match u {
                 Ok(Update::Session(info)) => write(&mut send, &ServerMsg::Session { info }).await?,
+                Ok(Update::Removed(id)) => {
+                    opened.remove(&id);
+                    write(&mut send, &ServerMsg::Sessions { items: core.sessions() }).await?;
+                }
                 Ok(Update::Msg { id, index, message }) => {
                     if opened.contains(&id) {
                         write(&mut send, &ServerMsg::Msg { id, index, message }).await?;
@@ -105,6 +110,13 @@ pub async fn serve(
                 }
                 Err(RecvError::Closed) => return Ok(()),
             },
+            // A revoked device, or remote control turned off, is let go.
+            Ok(()) = changes.changed() => {
+                if !core.config().mobile || !core.is_paired(&key) {
+                    let _ = send.finish();
+                    return Ok(());
+                }
+            }
         }
     }
 }

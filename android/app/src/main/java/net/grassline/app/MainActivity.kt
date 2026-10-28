@@ -1,5 +1,6 @@
 package net.grassline.app
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -26,12 +27,26 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
+    /** A pairing code the app was opened with (a scanned `grassline:` link). */
+    private val link = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         RustBridge.init(filesDir.absolutePath)
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { App() } } }
+        if (savedInstanceState == null) link.value = pairingLink(intent)
+        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { App(link.value) { link.value = null } } } }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        pairingLink(intent)?.let { link.value = it }
+    }
+
+    private fun pairingLink(intent: Intent?): String? =
+        intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString?.takeIf { it.startsWith("grassline:") }
 }
+
+fun deviceName(): String = Build.MODEL ?: "Android"
 
 /** The state of the core, updated whenever it changes. */
 @Composable
@@ -53,15 +68,26 @@ fun rememberCoreState(): State<AppState> {
 }
 
 @Composable
-fun App() {
+fun App(link: String?, onLinkUsed: () -> Unit) {
     val state by rememberCoreState()
     if (state.status == "unpaired" || state.status == "refused") {
-        PairScreen(state)
+        PairScreen(state, link, onLinkUsed)
         return
+    }
+    if (link != null) {
+        AlertDialog(
+            onDismissRequest = onLinkUsed,
+            title = { Text("Pair with another daemon?") },
+            text = { Text("This pairing code is for a daemon; this phone forgets the one it is paired with.") },
+            confirmButton = { TextButton({ onLinkUsed(); RustBridge.pair(link, deviceName()) }) { Text("Pair") } },
+            dismissButton = { TextButton(onLinkUsed) { Text("Cancel") } },
+        )
     }
     var current by remember { mutableStateOf<String?>(null) }
     // A session we just asked for opens once the daemon announces it.
     var waitingFor by remember { mutableStateOf<Set<String>?>(null) }
+    // Unless the daemon could not start it.
+    LaunchedEffect(state.error) { if (state.error != null) waitingFor = null }
     LaunchedEffect(state.sessions, waitingFor) {
         val known = waitingFor ?: return@LaunchedEffect
         state.sessions.firstOrNull { it.id !in known }?.let {
@@ -87,22 +113,53 @@ fun App() {
 }
 
 @Composable
-fun PairScreen(state: AppState) {
+fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
     var ticket by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var ownScanner by remember { mutableStateOf(false) }
+    fun pair(code: String) {
+        ticket = code.trim()
+        error = RustBridge.pair(ticket, deviceName())
+    }
+    // Opened from a link: the code is filled in, pairing is up to the user.
+    LaunchedEffect(link) {
+        if (link != null) {
+            ticket = link
+            error = null
+            onLinkUsed()
+        }
+    }
+    val scan = rememberQrScan(onFallback = { ownScanner = true }, onResult = ::pair)
+    if (ownScanner) {
+        BackHandler { ownScanner = false }
+        QrScannerScreen(onResult = { ownScanner = false; pair(it) }, onCancel = { ownScanner = false })
+        return
+    }
     Column(Modifier.fillMaxSize().padding(24.dp).systemBarsPadding(), verticalArrangement = Arrangement.Center) {
         Text("Grassline", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
-        Text("Open the daemon's admin interface, go to Remote control, press “New pairing code” and paste the code here.")
+        Text("Open the daemon's admin interface, go to Remote control, press “New pairing code”, then scan it or paste the code here.")
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = scan, Modifier.fillMaxWidth()) { Text("Scan QR code") }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(ticket, { ticket = it; error = null }, Modifier.fillMaxWidth(), label = { Text("Pairing code") }, singleLine = true)
         val shown = error ?: state.reason?.takeIf { state.status == "refused" }
         if (shown != null) Text(shown, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
         Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = { error = RustBridge.pair(ticket.trim(), Build.MODEL ?: "Android") },
+        OutlinedButton(
+            onClick = { pair(ticket) },
             enabled = ticket.isNotBlank(),
         ) { Text("Pair") }
+    }
+}
+
+/** The last error the daemon reported; tapping it dismisses it. */
+@Composable
+fun ErrorLine(state: AppState) {
+    state.error?.let {
+        Row(Modifier.fillMaxWidth().clickable { RustBridge.dismissError() }.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -140,27 +197,30 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
             ExtendedFloatingActionButton(onClick = { picking = true }) { Text("New session") }
         },
     ) { pad ->
-        if (state.sessions.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
-                Text("No sessions yet.")
-            }
-        } else {
-            LazyColumn(Modifier.fillMaxSize().padding(pad)) {
-                items(state.sessions, key = { it.id }) { s ->
-                    ListItem(
-                        headlineContent = { Text(s.project) },
-                        supportingContent = {
-                            Text(s.title.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        },
-                        overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
-                        trailingContent = when {
-                            s.waiting -> ({ Badge(containerColor = MaterialTheme.colorScheme.tertiary) { Text("needs you", Modifier.padding(horizontal = 4.dp)) } })
-                            s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
-                            else -> null
-                        },
-                        modifier = Modifier.clickable { onOpen(s) },
-                    )
-                    HorizontalDivider()
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            ErrorLine(state)
+            if (state.sessions.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No sessions yet.")
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(state.sessions, key = { it.id }) { s ->
+                        ListItem(
+                            headlineContent = { Text(s.project) },
+                            supportingContent = {
+                                Text(s.title.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            },
+                            overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
+                            trailingContent = when {
+                                s.waiting -> ({ Badge(containerColor = MaterialTheme.colorScheme.tertiary) { Text("needs you", Modifier.padding(horizontal = 4.dp)) } })
+                                s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
+                                else -> null
+                            },
+                            modifier = Modifier.clickable { onOpen(s) },
+                        )
+                        HorizontalDivider()
+                    }
                 }
             }
         }
@@ -207,11 +267,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         },
         bottomBar = {
             Column(Modifier.navigationBarsPadding()) {
-                state.error?.let {
-                    Row(Modifier.fillMaxWidth().clickable { RustBridge.dismissError() }.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                ErrorLine(state)
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                     OutlinedTextField(
                         draft, { draft = it }, Modifier.weight(1f),
@@ -223,7 +279,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                     } else {
                         Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
-                            enabled = draft.isNotBlank(),
+                            enabled = draft.isNotBlank() && state.status == "connected",
                         ) { Text("Send") }
                     }
                 }

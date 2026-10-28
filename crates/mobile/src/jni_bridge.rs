@@ -60,7 +60,7 @@ pub extern "system" fn Java_net_grassline_app_RustBridge_snapshot(
 }
 
 /// `await(seen: Long, timeoutMs: Long): Long`: blocks until the state is newer
-/// than `seen`; returns its version.
+/// than `seen`; returns its version. A negative `seen` returns it at once.
 #[no_mangle]
 pub extern "system" fn Java_net_grassline_app_RustBridge_await(
     _env: EnvUnowned<'_>,
@@ -68,7 +68,10 @@ pub extern "system" fn Java_net_grassline_app_RustBridge_await(
     seen: jlong,
     timeout_ms: jlong,
 ) -> jlong {
-    controller().wait(seen as u64, Duration::from_millis(timeout_ms as u64)) as jlong
+    let Ok(seen) = u64::try_from(seen) else {
+        return controller().version() as jlong;
+    };
+    controller().wait(seen, Duration::from_millis(timeout_ms.max(0) as u64)) as jlong
 }
 
 /// `pair(ticket: String, deviceName: String): String?`: an error message, or null.

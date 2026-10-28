@@ -21,8 +21,8 @@ fn core() -> &'static Arc<Core> {
 pub struct Admin {
     /// What the sessions tab showed last, to redraw it only when it changes.
     shown: String,
-    /// A one-time pairing ticket on display.
-    ticket: Option<String>,
+    /// A one-time pairing ticket on display, and its token.
+    ticket: Option<(String, String)>,
     /// The last thing that went wrong or was done.
     note: Option<(String, &'static str)>,
 }
@@ -293,12 +293,20 @@ impl Admin {
                 .label("New pairing code")
                 .on_press(Handler::action("pair")),
         );
-        if let Some(t) = &self.ticket {
+        if let Some((t, _)) = &self.ticket {
             out.element(
-                card("ticket")
-                    .parent("mobile-body")
-                    .title("Paste this in the app (valid for 10 minutes, once)"),
+                card("ticket").parent("mobile-body").title(
+                    "Scan this with the app, or paste the code (valid for 10 minutes, once)",
+                ),
             );
+            if let Some(src) = super::qr::data_uri(t) {
+                out.element(
+                    image("ticket-qr")
+                        .parent("ticket")
+                        .src(src)
+                        .alt("QR code of the pairing code"),
+                );
+            }
             out.element(
                 text("ticket-t")
                     .parent("ticket")
@@ -560,7 +568,7 @@ impl App for Admin {
             "pair" => {
                 let token = core.new_pairing_token();
                 match core.endpoint_id.get() {
-                    Some(id) => self.ticket = Some(grassline_proto::ticket(id, &token)),
+                    Some(id) => self.ticket = Some((grassline_proto::ticket(id, &token), token)),
                     None => self.fail("The iroh endpoint is not up yet; try again in a moment."),
                 }
             }
@@ -631,6 +639,13 @@ impl App for Admin {
     fn tick(&mut self, out: &mut Outbox, _now_ms: f64) {
         if Self::sessions_snapshot() != self.shown {
             self.render_sessions(out);
+        }
+        // A code that was used or expired goes away; a new device shows up.
+        if let Some((_, token)) = &self.ticket {
+            if !core().token_pending(token) {
+                self.ticket = None;
+                self.render(out);
+            }
         }
     }
 
