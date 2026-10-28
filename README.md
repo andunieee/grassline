@@ -1,38 +1,64 @@
-# grassline
+<p align="center">
+  <img src="assets/logo.svg" width="128" alt="Grassline logo">
+</p>
 
-A daemon that runs local coding agents (Claude Code, opencode, Codex) headlessly, and an Android
-app to talk to them from anywhere over iroh.
+<h1 align="center">Grassline</h1>
 
-- `crates/daemon` → `grasslined`: agents, sessions, the iroh endpoint and the admin interface
-  ([hypereffect](../hypereffect) served over HTTP and/or iroh, so any [hyperb](../hyperb) browser
-  opens it). It starts on `127.0.0.1:7878` only; every setting is edited from that interface.
-- `crates/agents`: one driver per agent CLI and its protocol on stdin/stdout.
-- `crates/proto`: the wire protocol between daemon and phone (JSON lines on an iroh stream).
-- `crates/mobile` + `android/`: the Rust core (iroh client, JNI) and the Kotlin Compose UI.
+<p align="center">Your coding agents, from anywhere.</p>
+
+Grassline runs Claude Code, opencode and Codex on your own computer and lets you talk to them
+from your phone. Start a session in any of your projects, watch the agent work, approve what it
+wants to do, answer its questions, and walk away: it keeps going at home while you're out
+touching grass.
+
+The phone reaches your computer directly over [iroh](https://iroh.computer). You don't need a
+server, an account, a port to open or a VPN.
+
+<p align="center">
+  <img src="screenshots/app-sessions.png" width="24%" alt="Sessions">
+  <img src="screenshots/app-chat.png" width="24%" alt="A tool waiting for permission">
+  <img src="screenshots/app-questions.png" width="24%" alt="An agent asking questions">
+  <img src="screenshots/app-pair.png" width="24%" alt="Pairing">
+</p>
+
+## What it does
+
+- **Every session in one place.** See all your sessions across projects and agents, newest
+  first. The ones where an agent is waiting for you are marked **needs you**.
+- **You decide what runs.** Before an agent runs a command or edits a file that needs your
+  permission, the app shows exactly what it wants to do. You can **Allow** it, **Always** allow
+  that tool for the rest of the session, or **Deny** it and say why. You can also let agents run
+  tools without asking.
+- **Questions with real answers.** When an agent asks you something, its options show up as
+  chips, and you can always write something else.
+- **See every step.** Each file read, search, edit and command shows up as one line. Tap it to
+  see its input and output.
+- **Pick your agent.** Choose Claude Code, opencode or Codex for each new session, change the
+  default, or switch a running conversation to another agent.
+- **Voice messages.** Tap 🎤, talk, and the agent gets the text. Transcription uses the
+  speech-to-text service you choose (OpenAI, OpenRouter, Groq, Mistral or any compatible one).
+  The phone calls it directly, so the audio never passes through your computer.
+- **Pairing with a QR code.** Scan the code shown in the admin dashboard with the app, or with
+  the phone's camera, and you're connected.
+
+## The admin dashboard
+
+The daemon on your computer is set up from a dashboard you open in a
+[hyperb](https://github.com/andunieee/hyperb) browser. There you can pair phones and see who's
+connected, choose which directories are projects, check which agents are installed, and set up
+voice messages.
+
+<p align="center">
+  <img src="screenshots/admin-agents.png" width="49%" alt="Agents">
+  <img src="screenshots/admin-voice.png" width="49%" alt="Voice messages">
+</p>
+
+## Getting started
 
 ```
-just daemon            # run it; open hyperb://127.0.0.1:7878/
-just daemon-install    # cargo install + systemd user service (deploy/grasslined.service)
-just android           # build the Rust core + APK and install on adb devices
+just daemon-install    # install the daemon as a systemd user service
+just android           # build the app and install it on connected phones
 ```
 
-The app streams every tool call (tap one for its input and output). Before an agent runs a tool
-that needs permission, or when it asks a question, the call waits in the app for Allow / Always
-(this tool, for the rest of the session) / Deny, or for the answers; "Let agents run tools without
-asking" skips the permission prompts. Each agent is driven through its interactive protocol:
-Claude Code's stream-json, `opencode acp` and `codex app-server`. The app shows each session's
-agent and the default one (top of the sessions list), and changes either: a new session can pick
-its agent, and switching an existing session to another agent starts a new conversation with it.
-
-Voice messages: admin interface → Voice, pick a speech-to-text service (OpenAI, OpenRouter,
-Groq, Mistral, or any OpenAI-style `audio/transcriptions` endpoint) and give its API
-key. The chat then shows a 🎤 button while the message box is empty: tap to record, Send to
-transcribe and send the text. The phone calls the service itself with that key; the audio never
-goes through the daemon.
-
-Pairing: admin interface → Access → "New pairing code", then "Scan QR code" in the app
-(it uses a scanner app or Google's code scanner when the phone has one, else its own) or paste the
-code. Scanning the QR code with the phone's camera app opens Grassline with the code filled in. Projects:
-Projects tab → add a root (each subdirectory is a project) or a single project directory.
-`cargo run -p grassline-mobile --example smoke -- <dir> <ticket|-> <project> <prompt>` is a
-command-line controller that allows everything it is asked (add `deny` to deny instead).
+Open `hyperb://127.0.0.1:7878/`, go to **Access**, press **New pairing code**, and scan it with the
+app. Then add your projects under **Projects** and start a session from the phone.

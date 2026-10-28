@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Screens with made-up data, for screenshots:
+             adb shell am start -n net.grassline.app/.DemoActivity -e screen sessions|chat|questions|pair -->
+        <activity android:name=".DemoActivity" android:exported="true" />
+    </application>
+</manifest>

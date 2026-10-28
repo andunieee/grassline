@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -18,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -137,8 +139,11 @@ fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
         return
     }
     Column(Modifier.fillMaxSize().padding(24.dp).systemBarsPadding(), verticalArrangement = Arrangement.Center) {
+        Image(painterResource(R.drawable.logo), null, Modifier.size(72.dp))
+        Spacer(Modifier.height(16.dp))
         Text("Grassline", style = MaterialTheme.typography.headlineLarge)
-        Spacer(Modifier.height(8.dp))
+        Text("Your coding agents, from anywhere.", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.outline)
+        Spacer(Modifier.height(16.dp))
         Text("Open the daemon's admin interface, go to Access, press “New pairing code”, then scan it or paste the code here.")
         Spacer(Modifier.height(16.dp))
         Button(onClick = scan, Modifier.fillMaxWidth()) { Text("Scan QR code") }
@@ -429,7 +434,7 @@ fun Code(text: String, maxLines: Int = 30) {
         Text(
             text, Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),
             style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
-            maxLines = maxLines, overflow = TextOverflow.Ellipsis, softWrap = false,
+            maxLines = maxLines, overflow = TextOverflow.Clip, softWrap = false,
         )
     }
 }

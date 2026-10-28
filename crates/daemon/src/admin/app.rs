@@ -632,6 +632,10 @@ impl Admin {
     }
 }
 
+/// assets/logo.svg as a 48px, 8-color PNG: hyperb shows only `data:` icons,
+/// and not every renderer reads SVG.
+const ICON: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwBAMAAAClLOS0AAAAGFBMVEUufTLT6tRam14AAACFtoinz6guezMtfDG4CgaaAAAACHRSTlP+//8A//8rqOUUUYoAAAEQSURBVHjatZRBSsQwFIa/eekYZqWDCiIIwaWIBGbhTgQRt3MB7yAIHsJreA5FXDvQhbjVEzizrXRaF63jNHkBFf1Xffn6/uRPmvZGMKErW4xA4CkYp+AEBFMQ6doj7KHoBjyqjFgdXJDQCj+V5Z8kiWdcCviU1cZ3bJcL00uAMtXhFCDJTGPAlTGo+g7WANjtdjx+hpODrmV/E4ZD4DSYoy6bNWWTAFR4Adg5isAD4PB5GPC4cbqPkxuAefaKGtnFezUru0dlFm8M3rYHL+922tbtEciXR9XMkjXV6nQB6tR+tx5tx/qS1d0ff62/uQaH+vCl1DqYma2zXLu0tfCsNZwjzJWVXeUI7Ie/AcstfABPHC2+8Ov20wAAAABJRU5ErkJggg==";
+
 fn serde_json_string<T: serde::Serialize>(v: &T) -> String {
     hypereffect::serde_json::to_string(v).unwrap_or_default()
 }
@@ -641,7 +645,8 @@ impl App for Admin {
         out.metadata(
             Metadata::new()
                 .name("Grassline")
-                .description("Runs coding agents for the Grassline app"),
+                .description("Runs coding agents for the Grassline app")
+                .icon(ICON),
         );
         out.signal(self.signals());
         self.render(out);
@@ -819,6 +824,7 @@ mod tests {
         install(core);
         let mut l = Loopback::<Admin>::new();
         assert_eq!(l.client.metadata().name.as_deref(), Some("Grassline"));
+        assert_eq!(l.client.metadata().icon.as_deref(), Some(ICON));
         assert!(l.trigger("pair", "onPress"));
         let src = l.client.attr("ticket-qr", "src").expect("a QR code");
         assert!(src.as_str().unwrap().starts_with("data:image/png;base64,"));
