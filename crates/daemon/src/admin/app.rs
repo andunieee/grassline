@@ -1,5 +1,7 @@
 //! The admin interface itself.
 
+#[cfg(test)]
+use crate::core::random_hex;
 use crate::core::{now_ms, Core};
 use grassline_agents::ALL;
 use hypereffect::ui::*;
@@ -19,7 +21,7 @@ fn core() -> &'static Arc<Core> {
 
 #[derive(Default)]
 pub struct Admin {
-    /// What the sessions tab showed last, to redraw it only when it changes.
+    /// What the sessions list showed last, to redraw it only when it changes.
     shown: String,
     /// A one-time pairing ticket on display, and its token.
     ticket: Option<(String, String)>,
@@ -87,7 +89,7 @@ fn item(
 }
 
 impl Admin {
-    /// What the sessions tab shows, to redraw it only when that changes. The
+    /// What the sessions list shows, to redraw it only when that changes. The
     /// minute is in it because the relative times change with it.
     fn sessions_snapshot() -> String {
         let sessions = core().sessions();
@@ -100,7 +102,7 @@ impl Admin {
 
     fn render_sessions(&mut self, out: &mut Outbox) {
         out.remove("sessions-body");
-        out.element(column("sessions-body").parent("tab-sessions"));
+        out.element(column("sessions-body").parent("sessions"));
         let sessions = core().sessions();
         if sessions.is_empty() {
             out.element(
@@ -184,8 +186,79 @@ impl Admin {
         }
         out.element(tabs("tabs").parent("root"));
 
-        // ---- sessions
-        out.element(tab("tab-sessions").parent("tabs").label("Sessions"));
+        // ---- access: the remote controllers and their sessions
+        out.element(tab("tab-access").parent("tabs").label("Access"));
+        out.remove("mobile-body");
+        out.element(column("mobile-body").parent("tab-access"));
+        match core().endpoint_id.get() {
+            Some(id) => out.element(
+                text("m-id")
+                    .parent("mobile-body")
+                    .variant("caption")
+                    .text(format!("Daemon key: {id}")),
+            ),
+            None => out.element(
+                text("m-id")
+                    .parent("mobile-body")
+                    .variant("caption")
+                    .text("The iroh endpoint is not up yet."),
+            ),
+        }
+        out.element(
+            button("pair")
+                .parent("mobile-body")
+                .variant("primary")
+                .label("New pairing code")
+                .on_press(Handler::action("pair")),
+        );
+        if let Some((t, _)) = &self.ticket {
+            out.element(
+                card("ticket").parent("mobile-body").title(
+                    "Scan this with the app, or paste the code (valid for 10 minutes, once)",
+                ),
+            );
+            if let Some(src) = super::qr::data_uri(t) {
+                out.element(
+                    image("ticket-qr")
+                        .parent("ticket")
+                        .src(src)
+                        .alt("QR code of the pairing code"),
+                );
+            }
+            out.element(
+                text("ticket-t")
+                    .parent("ticket")
+                    .variant("code")
+                    .text(t.as_str()),
+            );
+        }
+        out.element(
+            text("m-dev-h")
+                .parent("mobile-body")
+                .variant("h3")
+                .text("Paired devices"),
+        );
+        out.element(list("devices").parent("mobile-body").empty("No devices."));
+        for (i, d) in cfg.paired.iter().enumerate() {
+            let short: String = d.key.chars().take(12).collect();
+            item(
+                out,
+                "devices",
+                &format!("dev-{i}"),
+                format!("{} ({short}…)", d.name),
+                "unpair",
+                &d.key,
+                "Revoke",
+            );
+        }
+        // Its own column, so the sessions can be redrawn in place.
+        out.element(column("sessions").parent("tab-access"));
+        out.element(
+            text("sessions-h")
+                .parent("sessions")
+                .variant("h3")
+                .text("Sessions"),
+        );
         self.render_sessions(out);
 
         // ---- projects
@@ -260,82 +333,8 @@ impl Admin {
             );
         }
 
-        // ---- mobile
-        out.element(tab("tab-mobile").parent("tabs").label("Remote control"));
-        out.remove("mobile-body");
-        out.element(column("mobile-body").parent("tab-mobile"));
-        out.element(
-            checkbox("mobile")
-                .parent("mobile-body")
-                .variant("switch")
-                .label("Accept remote controllers")
-                .bind("mobile")
-                .on_change(Handler::action("set_mobile")),
-        );
-        match core().endpoint_id.get() {
-            Some(id) => out.element(
-                text("m-id")
-                    .parent("mobile-body")
-                    .variant("caption")
-                    .text(format!("Daemon key: {id}")),
-            ),
-            None => out.element(
-                text("m-id")
-                    .parent("mobile-body")
-                    .variant("caption")
-                    .text("The iroh endpoint is not up yet."),
-            ),
-        }
-        out.element(
-            button("pair")
-                .parent("mobile-body")
-                .variant("primary")
-                .label("New pairing code")
-                .on_press(Handler::action("pair")),
-        );
-        if let Some((t, _)) = &self.ticket {
-            out.element(
-                card("ticket").parent("mobile-body").title(
-                    "Scan this with the app, or paste the code (valid for 10 minutes, once)",
-                ),
-            );
-            if let Some(src) = super::qr::data_uri(t) {
-                out.element(
-                    image("ticket-qr")
-                        .parent("ticket")
-                        .src(src)
-                        .alt("QR code of the pairing code"),
-                );
-            }
-            out.element(
-                text("ticket-t")
-                    .parent("ticket")
-                    .variant("code")
-                    .text(t.as_str()),
-            );
-        }
-        out.element(
-            text("m-dev-h")
-                .parent("mobile-body")
-                .variant("h3")
-                .text("Paired devices"),
-        );
-        out.element(list("devices").parent("mobile-body").empty("No devices."));
-        for (i, d) in cfg.paired.iter().enumerate() {
-            let short: String = d.key.chars().take(12).collect();
-            item(
-                out,
-                "devices",
-                &format!("dev-{i}"),
-                format!("{} ({short}…)", d.name),
-                "unpair",
-                &d.key,
-                "Revoke",
-            );
-        }
-
-        // ---- admin access
-        out.element(tab("tab-admin").parent("tabs").label("Admin access"));
+        // ---- admin
+        out.element(tab("tab-admin").parent("tabs").label("Admin"));
         out.remove("admin-body");
         out.element(column("admin-body").parent("tab-admin"));
         let status = super::HTTP_STATUS.lock().unwrap().clone();
@@ -389,12 +388,21 @@ impl Admin {
                 .bind("iroh_on")
                 .on_change(Handler::action("set_iroh")),
         );
-        if let Some(id) = core().endpoint_id.get() {
+        if let Some(id) = core().endpoint_id.get().filter(|_| cfg.admin_iroh) {
+            let url = format!("hyperb://{id}/");
+            if let Some(src) = super::qr::data_uri(&url) {
+                out.element(
+                    image("a-qr")
+                        .parent("admin-body")
+                        .src(src)
+                        .alt("QR code of the iroh address"),
+                );
+            }
             out.element(
                 text("a-addr")
                     .parent("admin-body")
                     .variant("code")
-                    .text(format!("hyperb://{id}/")),
+                    .text(url),
             );
         }
         out.element(
@@ -499,7 +507,6 @@ impl Admin {
             "http_addr": c.admin_http.addr,
             "http_on": c.admin_http.enabled,
             "iroh_on": c.admin_iroh,
-            "mobile": c.mobile,
             "provider": c.default_provider,
             "auto": c.auto_approve,
             "bin": bins,
@@ -561,10 +568,6 @@ impl App for Admin {
             }
             "remove_root" => core.update_config(|c| c.project_roots.retain(|r| *r != payload)),
             "remove_dir" => core.update_config(|c| c.project_dirs.retain(|r| *r != payload)),
-            "set_mobile" => {
-                let on = a.signal("mobile").and_then(Value::as_bool).unwrap_or(true);
-                core.update_config(|c| c.mobile = on);
-            }
             "pair" => {
                 let token = core.new_pairing_token();
                 match core.endpoint_id.get() {
@@ -656,3 +659,22 @@ impl App for Admin {
 
 #[allow(dead_code)]
 fn _assert_element(_: Element) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hypereffect::server::Loopback;
+
+    #[test]
+    fn pairing_code_has_a_qr_code() {
+        let dir = std::env::temp_dir().join(format!("grassline-test-{}", random_hex(4)));
+        let core = Core::open(dir.join("config.json"), dir.join("data"));
+        let _ = core.endpoint_id.set("e".repeat(52));
+        install(core);
+        let mut l = Loopback::<Admin>::new();
+        assert!(l.trigger("pair", "onPress"));
+        let src = l.client.attr("ticket-qr", "src").expect("a QR code");
+        assert!(src.as_str().unwrap().starts_with("data:image/png;base64,"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

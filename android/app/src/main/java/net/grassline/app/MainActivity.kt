@@ -139,7 +139,7 @@ fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(24.dp).systemBarsPadding(), verticalArrangement = Arrangement.Center) {
         Text("Grassline", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
-        Text("Open the daemon's admin interface, go to Remote control, press “New pairing code”, then scan it or paste the code here.")
+        Text("Open the daemon's admin interface, go to Access, press “New pairing code”, then scan it or paste the code here.")
         Spacer(Modifier.height(16.dp))
         Button(onClick = scan, Modifier.fillMaxWidth()) { Text("Scan QR code") }
         Spacer(Modifier.height(16.dp))

@@ -22,8 +22,6 @@ pub struct Config {
     /// Iroh keys (hex) allowed into the admin interface from outside this
     /// machine.
     pub admin_keys: Vec<String>,
-    /// Accept remote controllers (the Android app) over iroh.
-    pub mobile: bool,
     pub paired: Vec<Paired>,
 }
 
@@ -54,7 +52,6 @@ impl Default for Config {
             },
             admin_iroh: false,
             admin_keys: vec![],
-            mobile: true,
             paired: vec![],
         }
     }

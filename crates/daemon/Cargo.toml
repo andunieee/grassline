@@ -24,3 +24,6 @@ hex = "0.4"
 base64 = "0.22"
 png = "0.18"
 qrcode = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+hypereffect = { version = "0.3", features = ["client"] }

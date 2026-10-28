@@ -21,14 +21,8 @@ pub async fn serve(
         .ok_or("closed before saying anything")?;
     let msg: ClientMsg = parse(&first).map_err(|e| e.to_string())?;
 
-    let allowed = core.config().mobile;
     let mut pending = None;
-    let hello = if !allowed {
-        ServerMsg::Hello {
-            ok: false,
-            error: Some("remote control is off".into()),
-        }
-    } else if let ClientMsg::Pair { token, name } = &msg {
+    let hello = if let ClientMsg::Pair { token, name } = &msg {
         if core.is_paired(&key) || core.pair(&key, name, token) {
             println!("paired {name} ({key})");
             ServerMsg::Hello {
@@ -111,9 +105,9 @@ pub async fn serve(
                 }
                 Err(RecvError::Closed) => return Ok(()),
             },
-            // A revoked device, or remote control turned off, is let go.
+            // A revoked device is let go.
             Ok(()) = changes.changed() => {
-                if !core.config().mobile || !core.is_paired(&key) {
+                if !core.is_paired(&key) {
                     let _ = send.finish();
                     return Ok(());
                 }

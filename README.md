@@ -24,7 +24,7 @@ Claude Code's stream-json, `opencode acp` and `codex app-server`. The app shows 
 agent and the default one (top of the sessions list), and changes either: a new session can pick
 its agent, and switching an existing session to another agent starts a new conversation with it.
 
-Pairing: admin interface → Remote control → "New pairing code", then "Scan QR code" in the app
+Pairing: admin interface → Access → "New pairing code", then "Scan QR code" in the app
 (it uses a scanner app or Google's code scanner when the phone has one, else its own) or paste the
 code. Scanning the QR code with the phone's camera app opens Grassline with the code filled in. Projects:
 Projects tab → add a root (each subdirectory is a project) or a single project directory.
