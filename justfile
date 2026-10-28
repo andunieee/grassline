@@ -17,17 +17,11 @@ daemon-install:
     systemctl --user enable --now grasslined
     @echo "grasslined is running; admin interface on hyperb://127.0.0.1:7878/"
 
-# Build the Rust core of the Android app
-android-libs:
+# Build the app and install it on every device connected through adb
+android:
     cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release -p grassline-mobile
-
-# Build the debug APK
-android-apk: android-libs
     android/gradlew -p android assembleDebug
-
-# Build and install the app on every device connected through adb
-android: android-libs
-    android/gradlew -p android installDebug
+    for serial in $(adb devices | awk 'NR > 1 && $2 == "device" { print $1 }'); do echo "installing on $serial"; adb -s "$serial" install -r android/app/build/outputs/apk/debug/app-debug.apk || exit 1; done
 
 test:
     cargo test --workspace
