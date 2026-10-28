@@ -42,7 +42,7 @@ fn main() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
-            c.create(&a[2]);
+            c.create(&a[2], "");
             let new = |s: &Value| {
                 s["sessions"]
                     .as_array()

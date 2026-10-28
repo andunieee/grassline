@@ -70,6 +70,7 @@ pub async fn serve(
         },
     )
     .await?;
+    write(&mut send, &agents(&core)).await?;
     write(
         &mut send,
         &ServerMsg::Sessions {
@@ -116,6 +117,8 @@ pub async fn serve(
                     let _ = send.finish();
                     return Ok(());
                 }
+                // The default agent or the agent binaries may have changed.
+                write(&mut send, &agents(&core)).await?;
             }
         }
     }
@@ -138,6 +141,7 @@ async fn handle(
                 },
             )
             .await?;
+            write(send, &agents(core)).await?;
             write(
                 send,
                 &ServerMsg::Sessions {
@@ -145,6 +149,17 @@ async fn handle(
                 },
             )
             .await?;
+        }
+        // The settings change announces the new default.
+        ClientMsg::SetDefaultAgent { provider } => {
+            if let Err(e) = core.set_default_agent(&provider) {
+                write(send, &err(e)).await?;
+            }
+        }
+        ClientMsg::SetAgent { id, provider } => {
+            if let Err(e) = core.set_agent(&id, &provider) {
+                write(send, &err(e)).await?;
+            }
         }
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {
@@ -183,6 +198,13 @@ async fn handle(
         } => core.decide(&id, &request, decision),
     }
     Ok(())
+}
+
+fn agents(core: &Core) -> ServerMsg {
+    ServerMsg::Agents {
+        items: core.agents(),
+        default: core.config().default_provider,
+    }
 }
 
 async fn write(send: &mut SendStream, m: &ServerMsg) -> Result<(), String> {

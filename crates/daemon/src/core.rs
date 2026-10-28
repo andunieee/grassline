@@ -3,7 +3,8 @@
 use crate::config::Config;
 use grassline_agents::{Answer, Event, Provider, Turn};
 use grassline_proto::{
-    Ask, Choice, Decision, Message, Project, Question, Role, SessionInfo, ToolCall, ToolStatus,
+    Agent, Ask, Choice, Decision, Message, Project, Question, Role, SessionInfo, ToolCall,
+    ToolStatus,
 };
 
 /// The requests the agent waits for: the tool call's message index, and the
@@ -224,6 +225,60 @@ impl Core {
         out
     }
 
+    // ---- agents
+
+    /// Every agent, and whether it is installed.
+    pub fn agents(&self) -> Vec<Agent> {
+        let cfg = self.config();
+        grassline_agents::ALL
+            .into_iter()
+            .map(|p| Agent {
+                name: p.name().into(),
+                installed: p.detect(&cfg.options(p)).is_some(),
+            })
+            .collect()
+    }
+
+    /// An installed agent by its name.
+    fn installed(&self, name: &str) -> Result<Provider, String> {
+        let provider = Provider::from_name(name).ok_or_else(|| format!("unknown agent {name}"))?;
+        if provider.detect(&self.config().options(provider)).is_none() {
+            return Err(format!("{} is not installed", provider.name()));
+        }
+        Ok(provider)
+    }
+
+    pub fn set_default_agent(&self, name: &str) -> Result<(), String> {
+        let provider = self.installed(name)?;
+        self.update_config(|c| c.default_provider = provider.name().into());
+        Ok(())
+    }
+
+    /// Switches a session to another agent, which starts a new conversation.
+    pub fn set_agent(&self, id: &str, name: &str) -> Result<(), String> {
+        let provider = self.installed(name)?;
+        let info = {
+            let mut map = self.sessions.lock().unwrap();
+            let s = map.get_mut(id).ok_or("no such session")?;
+            if s.info.running {
+                return Err("the agent is still working".into());
+            }
+            if s.info.provider == provider.name() {
+                return Ok(());
+            }
+            s.info.provider = provider.name().into();
+            s.info.updated = now_ms();
+            // The other agent's conversation id means nothing to this one,
+            // nor do the tools allowed to it.
+            s.provider_session = None;
+            s.allowed.clear();
+            s.info.clone()
+        };
+        self.save(id);
+        let _ = self.updates.send(Update::Session(info));
+        Ok(())
+    }
+
     // ---- sessions
 
     /// Every session, most recently updated first.
@@ -258,14 +313,11 @@ impl Core {
             .find(|p| p.path == project || p.name == project)
             .ok_or("that is not one of the projects")?;
         let cfg = self.config();
-        let provider = provider
-            .filter(|p| !p.is_empty())
-            .unwrap_or(&cfg.default_provider);
-        let provider =
-            Provider::from_name(provider).ok_or_else(|| format!("unknown agent {provider}"))?;
-        if provider.detect(&cfg.options(provider)).is_none() {
-            return Err(format!("{} is not installed", provider.name()));
-        }
+        let provider = self.installed(
+            provider
+                .filter(|p| !p.is_empty())
+                .unwrap_or(&cfg.default_provider),
+        )?;
         let now = now_ms();
         let info = SessionInfo {
             id: random_hex(8),

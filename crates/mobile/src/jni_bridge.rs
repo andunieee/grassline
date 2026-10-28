@@ -109,7 +109,9 @@ macro_rules! simple {
 }
 
 simple! {
-    Java_net_grassline_app_RustBridge_create(project) => |c, project| c.create(&project);
+    Java_net_grassline_app_RustBridge_create(project, provider) => |c, project, provider| c.create(&project, &provider);
+    Java_net_grassline_app_RustBridge_setDefaultAgent(provider) => |c, provider| c.set_default_agent(&provider);
+    Java_net_grassline_app_RustBridge_setAgent(id, provider) => |c, id, provider| c.set_agent(&id, &provider);
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
     Java_net_grassline_app_RustBridge_stop(id) => |c, id| c.stop(&id);
     Java_net_grassline_app_RustBridge_send(id, text) => |c, id, text| c.send_text(&id, &text);

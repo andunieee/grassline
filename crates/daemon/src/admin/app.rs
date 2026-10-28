@@ -93,7 +93,7 @@ impl Admin {
         let sessions = core().sessions();
         let rows: Vec<_> = sessions
             .iter()
-            .map(|s| (&s.id, ago(s.updated), s.running, &s.title))
+            .map(|s| (&s.id, ago(s.updated), s.running, &s.title, &s.provider))
             .collect();
         serde_json_string(&rows)
     }
@@ -144,7 +144,7 @@ impl Admin {
                 text(format!("{id}-when"))
                     .parent(id.as_str())
                     .variant("caption")
-                    .text(format!("{} · {}", s.path, ago(s.updated))),
+                    .text(format!("{} · {} · {}", s.id, s.path, ago(s.updated))),
             );
             out.element(row(format!("{id}-btns")).parent(id.as_str()).justify("end"));
             if s.running {

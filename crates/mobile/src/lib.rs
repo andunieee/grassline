@@ -6,7 +6,7 @@
 mod jni_bridge;
 
 use grassline_proto::{
-    parse, parse_ticket, to_line, ClientMsg, Message, Project, ServerMsg, SessionInfo, ALPN,
+    parse, parse_ticket, to_line, Agent, ClientMsg, Message, Project, ServerMsg, SessionInfo, ALPN,
 };
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -35,6 +35,9 @@ pub enum Status {
 struct State {
     status: Option<Status>,
     projects: Vec<Project>,
+    agents: Vec<Agent>,
+    /// The agent new sessions use by default.
+    default_agent: String,
     sessions: Vec<SessionInfo>,
     /// The messages of the sessions that were opened.
     messages: HashMap<String, Vec<Message>>,
@@ -172,10 +175,26 @@ impl Controller {
         self.send(ClientMsg::Refresh);
     }
 
-    pub fn create(&self, project: &str) {
+    /// Creates a session with `provider`, or the default agent when it is
+    /// empty.
+    pub fn create(&self, project: &str, provider: &str) {
         self.send(ClientMsg::Create {
             project: project.into(),
-            provider: None,
+            provider: (!provider.is_empty()).then(|| provider.into()),
+        });
+    }
+
+    pub fn set_default_agent(&self, provider: &str) {
+        self.send(ClientMsg::SetDefaultAgent {
+            provider: provider.into(),
+        });
+    }
+
+    /// Switches a session to another agent; it starts a new conversation.
+    pub fn set_agent(&self, id: &str, provider: &str) {
+        self.send(ClientMsg::SetAgent {
+            id: id.into(),
+            provider: provider.into(),
         });
     }
 
@@ -211,7 +230,8 @@ impl Controller {
         self.shared.edit(|s| s.error = None);
     }
 
-    /// The state as JSON: `status`, `reason`, `projects`, `sessions` (most
+    /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
+    /// whether each is installed), `default_agent`, `sessions` (most
     /// recent first), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {
@@ -219,6 +239,8 @@ impl Controller {
         let mut v = serde_json::to_value(s.status.clone().unwrap_or(Status::Connecting)).unwrap();
         let o = v.as_object_mut().unwrap();
         o.insert("projects".into(), json!(s.projects));
+        o.insert("agents".into(), json!(s.agents));
+        o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("sessions".into(), json!(s.sessions));
         o.insert("messages".into(), json!(s.messages));
         o.insert("error".into(), json!(s.error));
@@ -365,6 +387,10 @@ fn apply(shared: &Shared, msg: ServerMsg) {
     shared.edit(|s| match msg {
         ServerMsg::Hello { .. } => {}
         ServerMsg::Projects { items } => s.projects = items,
+        ServerMsg::Agents { items, default } => {
+            s.agents = items;
+            s.default_agent = default;
+        }
         ServerMsg::Sessions { items } => s.sessions = items,
         ServerMsg::Session { info } => {
             s.sessions.retain(|i| i.id != info.id);

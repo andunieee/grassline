@@ -5,6 +5,9 @@ import org.json.JSONObject
 
 data class Project(val name: String, val path: String)
 
+/** An agent the daemon can run; [installed] when its binary was found there. */
+data class Agent(val name: String, val installed: Boolean)
+
 data class SessionInfo(
     val id: String,
     val project: String,
@@ -67,6 +70,9 @@ data class AppState(
     val status: String = "connecting",
     val reason: String? = null,
     val projects: List<Project> = emptyList(),
+    val agents: List<Agent> = emptyList(),
+    /** The agent new sessions use by default. */
+    val defaultAgent: String = "",
     /** Most recent first. */
     val sessions: List<SessionInfo> = emptyList(),
     val messages: Map<String, List<ChatMessage>> = emptyMap(),
@@ -80,6 +86,8 @@ data class AppState(
                 status = o.getString("state"),
                 reason = o.optString("reason").takeIf { !o.isNull("reason") && it.isNotEmpty() },
                 projects = o.getJSONArray("projects").map { Project(it.getString("name"), it.getString("path")) },
+                agents = o.optJSONArray("agents").map { Agent(it.getString("name"), it.optBoolean("installed")) },
+                defaultAgent = o.optString("default_agent"),
                 sessions = o.getJSONArray("sessions").map {
                     SessionInfo(
                         it.getString("id"), it.getString("project"), it.getString("provider"),

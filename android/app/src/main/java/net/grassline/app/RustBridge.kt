@@ -19,7 +19,12 @@ object RustBridge {
     @JvmStatic external fun pair(ticket: String, deviceName: String): String?
     @JvmStatic external fun unpair()
     @JvmStatic external fun refresh()
-    @JvmStatic external fun create(project: String)
+    /** Creates a session in [project] with [provider], or the default agent when it is empty. */
+    @JvmStatic external fun create(project: String, provider: String)
+    @JvmStatic external fun setDefaultAgent(provider: String)
+
+    /** Switches a session to another agent; it starts a new conversation. */
+    @JvmStatic external fun setAgent(id: String, provider: String)
     @JvmStatic external fun open(id: String)
     @JvmStatic external fun send(id: String, text: String)
     @JvmStatic external fun stop(id: String)

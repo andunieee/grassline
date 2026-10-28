@@ -105,6 +105,15 @@ pub struct Project {
     pub path: String,
 }
 
+/// An agent the daemon can run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Agent {
+    /// The provider's name, as in [`SessionInfo::provider`].
+    pub name: String,
+    /// Its binary was found on the daemon's machine.
+    pub installed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -130,9 +139,20 @@ pub enum ClientMsg {
     },
     /// Asks for the projects and the sessions again.
     Refresh,
+    /// Creates a session; without `provider`, with the default agent.
     Create {
         project: String,
         provider: Option<String>,
+    },
+    /// Sets the agent new sessions use by default.
+    SetDefaultAgent {
+        provider: String,
+    },
+    /// Switches session `id` to another agent. It starts a new conversation
+    /// with it: the agent does not see the earlier messages.
+    SetAgent {
+        id: String,
+        provider: String,
     },
     /// Starts receiving the messages of a session.
     Open {
@@ -163,6 +183,11 @@ pub enum ServerMsg {
     },
     Projects {
         items: Vec<Project>,
+    },
+    /// The agents, and the one new sessions use by default.
+    Agents {
+        items: Vec<Agent>,
+        default: String,
     },
     /// Every session, most recently updated first.
     Sessions {

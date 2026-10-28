@@ -105,9 +105,9 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
         SessionsScreen(
             state,
             onOpen = { RustBridge.open(it.id); current = it.id },
-            onCreate = { project ->
+            onCreate = { project, agent ->
                 waitingFor = state.sessions.map { it.id }.toSet()
-                RustBridge.create(project.path)
+                RustBridge.create(project.path, agent)
             },
         )
     }
@@ -166,9 +166,12 @@ fun ErrorLine(state: AppState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Project) -> Unit) {
+fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Project, String) -> Unit) {
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var agentMenu by remember { mutableStateOf(false) }
+    // The agent the next session gets; the default until another is picked.
+    var agent by remember(picking, state.defaultAgent) { mutableStateOf(state.defaultAgent) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -186,6 +189,15 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                     }
                 },
                 actions = {
+                    if (state.agents.isNotEmpty()) {
+                        Box {
+                            TextButton({ agentMenu = true }) { Text(state.defaultAgent.ifEmpty { "agent" } + " ▾") }
+                            AgentMenu(agentMenu, state.agents, state.defaultAgent, { agentMenu = false }) {
+                                agentMenu = false
+                                RustBridge.setDefaultAgent(it)
+                            }
+                        }
+                    }
                     TextButton({ menu = true }) { Text("⋮") }
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
@@ -235,12 +247,15 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                 if (state.projects.isEmpty()) {
                     Text("The daemon has no projects. Add a project directory in its admin interface.")
                 } else {
-                    LazyColumn {
-                        items(state.projects, key = { it.path }) { p ->
-                            ListItem(
-                                headlineContent = { Text(p.name) },
-                                modifier = Modifier.clickable { picking = false; onCreate(p) },
-                            )
+                    Column {
+                        AgentChips(state.agents, agent) { agent = it }
+                        LazyColumn {
+                            items(state.projects, key = { it.path }) { p ->
+                                ListItem(
+                                    headlineContent = { Text(p.name) },
+                                    modifier = Modifier.clickable { picking = false; onCreate(p, agent) },
+                                )
+                            }
                         }
                     }
                 }
@@ -254,6 +269,9 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
 fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     val messages = state.messages[session.id].orEmpty()
     var draft by remember { mutableStateOf("") }
+    var agentMenu by remember { mutableStateOf(false) }
+    // The agent to switch to, once the user confirms.
+    var switchTo by remember { mutableStateOf<String?>(null) }
     val list = rememberLazyListState()
     LaunchedEffect(messages.size, messages.lastOrNull()) {
         if (messages.isNotEmpty()) list.animateScrollToItem(messages.size - 1)
@@ -264,6 +282,17 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text(session.project) },
                 navigationIcon = { TextButton(onBack) { Text("←") } },
+                actions = {
+                    Box {
+                        TextButton({ agentMenu = true }, enabled = !session.running && state.agents.isNotEmpty()) {
+                            Text(session.provider + " ▾")
+                        }
+                        AgentMenu(agentMenu, state.agents, session.provider, { agentMenu = false }) {
+                            agentMenu = false
+                            if (it != session.provider) switchTo = it
+                        }
+                    }
+                },
             )
         },
         bottomBar = {
@@ -290,6 +319,41 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(messages.size) { Bubble(session.id, messages[it]) }
             if (session.running && !session.waiting) item { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+        }
+    }
+
+    switchTo?.let { to ->
+        AlertDialog(
+            onDismissRequest = { switchTo = null },
+            title = { Text("Switch to $to?") },
+            text = { Text("$to starts a new conversation: it does not see the messages so far, which stay here.") },
+            confirmButton = { TextButton({ switchTo = null; RustBridge.setAgent(session.id, to) }) { Text("Switch") } },
+            dismissButton = { TextButton({ switchTo = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** The agents to pick from; the ones the daemon cannot find are greyed out. */
+@Composable
+fun AgentMenu(open: Boolean, agents: List<Agent>, current: String, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    DropdownMenu(open, onDismiss) {
+        for (a in agents) {
+            DropdownMenuItem(
+                text = { Text(if (a.installed) a.name else "${a.name} (not installed)") },
+                leadingIcon = { Text(if (a.name == current) "✓" else "") },
+                enabled = a.installed,
+                onClick = { onPick(a.name) },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun AgentChips(agents: List<Agent>, picked: String, onPick: (String) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (a in agents) {
+            FilterChip(selected = a.name == picked, onClick = { onPick(a.name) }, label = { Text(a.name) }, enabled = a.installed)
         }
     }
 }
