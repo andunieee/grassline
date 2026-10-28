@@ -7,6 +7,7 @@
 //! open with [`ClientMsg::Pair`] and a token from the admin interface.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const ALPN: &[u8] = b"grassline/0";
 
@@ -15,7 +16,8 @@ pub const ALPN: &[u8] = b"grassline/0";
 pub enum Role {
     User,
     Assistant,
-    /// A tool call the agent made, summarized in one line.
+    /// A tool call the agent made: `text` summarizes it in one line, `tool`
+    /// follows its progress.
     Tool,
     Error,
 }
@@ -26,6 +28,75 @@ pub struct Message {
     pub text: String,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The provider's id for the call.
+    pub id: String,
+    pub name: String,
+    /// The arguments, as pretty JSON.
+    pub input: String,
+    pub status: ToolStatus,
+    /// What it returned, cut to a few kilobytes.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// While `status` is `Waiting`: what the agent asks.
+    #[serde(default)]
+    pub ask: Option<Ask>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Running,
+    /// Waiting for a [`ClientMsg::Decide`].
+    Waiting,
+    Done,
+    Failed,
+    Denied,
+}
+
+/// A decision the agent waits for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    /// The id to answer with.
+    pub request: String,
+    /// Questions to answer by picking options; empty when the agent only asks
+    /// for permission to run the tool.
+    #[serde(default)]
+    pub questions: Vec<Question>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Question {
+    pub question: String,
+    /// A short label for it.
+    pub header: String,
+    pub options: Vec<Choice>,
+    /// Several options may be picked.
+    pub multi: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Choice {
+    pub label: String,
+    pub description: String,
+}
+
+/// The answer to an [`Ask`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Decision {
+    pub allow: bool,
+    /// Also allow this tool, without asking, for the rest of the session.
+    pub always: bool,
+    /// By question: the picked labels, joined with ", ", or free text.
+    pub answers: BTreeMap<String, String>,
+    /// Why it was denied, for the agent.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +116,9 @@ pub struct SessionInfo {
     pub created: u64,
     pub updated: u64,
     pub running: bool,
+    /// The agent waits for a decision.
+    #[serde(default)]
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +144,12 @@ pub enum ClientMsg {
     },
     Stop {
         id: String,
+    },
+    /// Answers the [`Ask`] of a tool call in session `id`.
+    Decide {
+        id: String,
+        request: String,
+        decision: Decision,
     },
 }
 
@@ -142,6 +222,23 @@ mod tests {
         let line = to_line(&m);
         assert_eq!(line, "{\"t\":\"send\",\"id\":\"a\",\"text\":\"hi\"}\n");
         assert_eq!(parse::<ClientMsg>(&line).unwrap(), m);
+    }
+
+    #[test]
+    fn decisions_default() {
+        let m: ClientMsg =
+            parse(r#"{"t":"decide","id":"a","request":"r","decision":{"allow":true}}"#).unwrap();
+        assert_eq!(
+            m,
+            ClientMsg::Decide {
+                id: "a".into(),
+                request: "r".into(),
+                decision: Decision {
+                    allow: true,
+                    ..Default::default()
+                }
+            }
+        );
     }
 
     #[test]

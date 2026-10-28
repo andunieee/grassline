@@ -6,10 +6,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,7 +153,11 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                             Text(s.title.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         },
                         overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
-                        trailingContent = if (s.running) ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }) else null,
+                        trailingContent = when {
+                            s.waiting -> ({ Badge(containerColor = MaterialTheme.colorScheme.tertiary) { Text("needs you", Modifier.padding(horizontal = 4.dp)) } })
+                            s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
+                            else -> null
+                        },
                         modifier = Modifier.clickable { onOpen(s) },
                     )
                     HorizontalDivider()
@@ -187,7 +194,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     val messages = state.messages[session.id].orEmpty()
     var draft by remember { mutableStateOf("") }
     val list = rememberLazyListState()
-    LaunchedEffect(messages.size, messages.lastOrNull()?.text) {
+    LaunchedEffect(messages.size, messages.lastOrNull()) {
         if (messages.isNotEmpty()) list.animateScrollToItem(messages.size - 1)
     }
     Scaffold(
@@ -224,23 +231,159 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         },
     ) { pad ->
         LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(messages.size) { Bubble(messages[it]) }
-            if (session.running) item { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+            items(messages.size) { Bubble(session.id, messages[it]) }
+            if (session.running && !session.waiting) item { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
         }
     }
 }
 
 @Composable
-fun Bubble(m: ChatMessage) {
+fun Bubble(sessionId: String, m: ChatMessage) {
     when (m.role) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.widthIn(max = 320.dp)) {
                 Text(m.text, Modifier.padding(12.dp))
             }
         }
-        "tool" -> Text(m.text, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.outline, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        "tool" -> {
+            val t = m.tool
+            when {
+                t == null -> Text(m.text, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.outline, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                t.ask != null && t.ask.questions.isNotEmpty() -> QuestionsCard(sessionId, t.ask)
+                t.ask != null -> PermissionCard(sessionId, m.text, t, t.ask)
+                else -> ToolLine(m.text, t)
+            }
+        }
         "error" -> Text(m.text, color = MaterialTheme.colorScheme.error)
         else -> Text(m.text)
+    }
+}
+
+/** A tool call in one line; tapping it shows its input and output. */
+@Composable
+fun ToolLine(summary: String, t: ToolCall) {
+    var open by remember { mutableStateOf(false) }
+    val mono = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
+    Column(Modifier.fillMaxWidth().clickable { open = !open }) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            when (t.status) {
+                "running" -> CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
+                else -> Text(
+                    when (t.status) { "done" -> "✓"; "denied" -> "⊘"; else -> "✗" },
+                    style = mono,
+                    color = if (t.status == "done") MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(summary, style = mono, color = MaterialTheme.colorScheme.outline, maxLines = if (open) 10 else 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (open) {
+            Code(t.input)
+            t.output?.takeIf { it.isNotBlank() }?.let { Code(it) }
+        }
+    }
+}
+
+@Composable
+fun Code(text: String, maxLines: Int = 30) {
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text(
+            text, Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),
+            style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace,
+            maxLines = maxLines, overflow = TextOverflow.Ellipsis, softWrap = false,
+        )
+    }
+}
+
+fun decide(sessionId: String, request: String, allow: Boolean, always: Boolean = false, answers: Map<String, String> = emptyMap(), message: String? = null) {
+    val d = JSONObject()
+        .put("allow", allow)
+        .put("always", always)
+        .put("answers", JSONObject(answers))
+        .put("message", message ?: JSONObject.NULL)
+    RustBridge.decide(sessionId, request, d.toString())
+}
+
+/** The agent asks to run a tool. */
+@Composable
+fun PermissionCard(sessionId: String, summary: String, t: ToolCall, ask: Ask) {
+    var note by remember(ask.request) { mutableStateOf("") }
+    // A plan reads better as text than as JSON.
+    val plan = if (t.name == "ExitPlanMode") runCatching { JSONObject(t.input).optString("plan") }.getOrNull()?.takeIf { it.isNotBlank() } else null
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Text(if (plan != null) "Approve the plan?" else "Allow ${t.name}?", style = MaterialTheme.typography.titleSmall)
+            if (plan != null) {
+                Text(plan, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(summary, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.outline)
+                Code(t.input, maxLines = 12)
+            }
+            OutlinedTextField(
+                note, { note = it }, Modifier.fillMaxWidth().padding(top = 8.dp),
+                placeholder = { Text("Why not (optional)") }, maxLines = 3, textStyle = MaterialTheme.typography.bodySmall,
+            )
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton({ decide(sessionId, ask.request, false, message = note.ifBlank { null }) }) { Text("Deny") }
+                if (plan == null) OutlinedButton({ decide(sessionId, ask.request, true, always = true) }) { Text("Always") }
+                Button({ decide(sessionId, ask.request, true) }, enabled = note.isBlank()) { Text("Allow") }
+            }
+        }
+    }
+}
+
+/** The agent asks questions with options to pick. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun QuestionsCard(sessionId: String, ask: Ask) {
+    val picked = remember(ask.request) { mutableStateMapOf<String, Set<String>>() }
+    val other = remember(ask.request) { mutableStateMapOf<String, String>() }
+    fun answer(q: Question): String? =
+        other[q.question]?.takeIf { it.isNotBlank() }
+            ?: picked[q.question]?.takeIf { it.isNotEmpty() }?.let { set -> q.options.map { it.label }.filter { it in set }.joinToString(", ") }
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (q in ask.questions) {
+                Column {
+                    if (q.header.isNotBlank()) Text(q.header, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(q.question, style = MaterialTheme.typography.titleSmall)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (o in q.options) {
+                            val on = o.label in picked[q.question].orEmpty()
+                            FilterChip(
+                                selected = on,
+                                onClick = {
+                                    val cur = picked[q.question].orEmpty()
+                                    picked[q.question] = when {
+                                        q.multi && on -> cur - o.label
+                                        q.multi -> cur + o.label
+                                        else -> setOf(o.label)
+                                    }
+                                    other.remove(q.question)
+                                },
+                                label = { Text(o.label) },
+                            )
+                        }
+                    }
+                    q.options.firstOrNull { it.label in picked[q.question].orEmpty() && it.description.isNotBlank() }?.let {
+                        Text(it.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    }
+                    OutlinedTextField(
+                        other[q.question].orEmpty(),
+                        { other[q.question] = it; if (it.isNotBlank()) picked.remove(q.question) },
+                        Modifier.fillMaxWidth(), placeholder = { Text("Something else") }, maxLines = 3,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                TextButton({ decide(sessionId, ask.request, false, message = "I'd rather not answer.") }) { Text("Skip") }
+                Button(
+                    onClick = { decide(sessionId, ask.request, true, answers = ask.questions.associate { it.question to answer(it)!! }) },
+                    enabled = ask.questions.all { answer(it) != null },
+                ) { Text("Answer") }
+            }
+        }
     }
 }
 

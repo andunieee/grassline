@@ -11,7 +11,8 @@ pub struct Config {
     /// Directories that are projects themselves.
     pub project_dirs: Vec<String>,
     pub default_provider: String,
-    /// Lets agents run tools without asking; nobody is there to answer.
+    /// Lets agents run tools without asking. Otherwise they ask the paired
+    /// app.
     pub auto_approve: bool,
     /// Overrides for the agent binaries, by provider name.
     pub binaries: std::collections::BTreeMap<String, String>,

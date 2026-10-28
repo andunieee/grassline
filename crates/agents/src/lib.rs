@@ -1,16 +1,25 @@
 //! Driving local coding agents headlessly.
 //!
 //! Every provider is an installed CLI that runs one conversation turn as a
-//! child process and prints its progress as JSON lines. A turn is started with
-//! the prompt and, for later turns, the provider's own session id, so the
-//! agent keeps its context between turns without a long-lived process. The
-//! lines are normalised into [`Event`]s.
+//! child process speaking JSON lines on stdin and stdout, each in its own
+//! protocol: Claude Code's stream-json ([`claude`]), the Agent Client Protocol
+//! of `opencode acp` ([`acp`]) and the Codex app server ([`codex`]). A turn is
+//! started with the prompt and, for later turns, the provider's own session
+//! id, so the agent keeps its context between turns without a long-lived
+//! process. The lines are normalised into [`Event`]s; when the agent asks
+//! before it runs a tool ([`Event::Ask`]), it waits for [`Turn::answer`].
 
-use serde_json::Value;
+mod acp;
+mod claude;
+mod codex;
+
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, Command};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
@@ -26,21 +35,100 @@ pub const ALL: [Provider; 3] = [Provider::Claude, Provider::Opencode, Provider::
 pub enum Event {
     /// The provider's id for this conversation, to resume it later.
     Session(String),
-    /// A piece of the answer. Consecutive pieces belong to the same message.
+    /// A piece of the answer: the start of a message, or a paragraph of the
+    /// current one.
     Text(String),
-    /// A tool call, in one line.
-    Tool(String),
+    /// More of the piece of text before it.
+    Delta(String),
+    /// A tool call started, or its input became known: the same `id` is the
+    /// same call. `summary` is one line.
+    Tool {
+        id: String,
+        name: String,
+        summary: String,
+        input: Value,
+    },
+    /// A tool call ended.
+    ToolResult {
+        id: String,
+        output: String,
+        error: bool,
+    },
+    /// The agent waits for [`Turn::answer`] before it goes on. `tool_id` is
+    /// the [`Event::Tool`] it is about, when it says. With `questions`, it asks
+    /// for their answers; without, for permission to run the tool.
+    Ask {
+        request: String,
+        tool_id: Option<String>,
+        name: String,
+        input: Value,
+        questions: Vec<Question>,
+    },
+    /// The agent no longer waits for that answer.
+    AskCancelled(String),
     Error(String),
     /// The turn ended.
     Done,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Question {
+    pub question: String,
+    /// A short label for it.
+    pub header: String,
+    pub options: Vec<Choice>,
+    /// Several options may be picked.
+    pub multi: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    pub label: String,
+    pub description: String,
+}
+
+/// The answer to an [`Event::Ask`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// Go ahead. `answers` has the answer to each question, by its text: the
+    /// picked labels joined with ", ", or free text.
+    Allow { answers: BTreeMap<String, String> },
+    /// Do not; the message tells the agent why, when its protocol can.
+    Deny(String),
+}
+
+impl Answer {
+    pub fn allow() -> Answer {
+        Answer::Allow {
+            answers: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Overrides the binary to run (a path, or a name looked up in `PATH`).
     pub binary: Option<String>,
-    /// Lets the agent act without asking: it cannot ask anyone.
+    /// Lets the agent act without asking for permission. It can still ask
+    /// questions.
     pub auto_approve: bool,
+}
+
+/// What a turn is started with.
+struct Start {
+    prompt: String,
+    /// The id from [`Event::Session`].
+    resume: Option<String>,
+    cwd: String,
+    auto_approve: bool,
+}
+
+/// One turn's conversation with the agent process, in its protocol. `w`
+/// collects the lines to write to it.
+trait Driver: Send {
+    fn start(&mut self, w: &mut Vec<Value>);
+    fn line(&mut self, v: Value, w: &mut Vec<Value>) -> Vec<Event>;
+    fn answer(&mut self, request: &str, answer: Answer, w: &mut Vec<Value>);
 }
 
 impl Provider {
@@ -61,14 +149,8 @@ impl Provider {
         which(opts.binary.as_deref().unwrap_or(self.name()))
     }
 
-    /// The command for one turn. `resume` is the id from [`Event::Session`].
-    pub fn command(
-        self,
-        opts: &Options,
-        cwd: &Path,
-        prompt: &str,
-        resume: Option<&str>,
-    ) -> Command {
+    /// The command that runs a turn; what it is about goes to its stdin.
+    fn command(self, opts: &Options, cwd: &Path, resume: Option<&str>) -> Command {
         let bin = self
             .detect(opts)
             .unwrap_or_else(|| opts.binary.clone().unwrap_or(self.name().into()).into());
@@ -76,59 +158,46 @@ impl Provider {
         match self {
             Provider::Claude => {
                 c.args(["-p", "--output-format", "stream-json", "--verbose"]);
+                c.args(["--input-format", "stream-json"]);
+                c.args(["--permission-prompt-tool", "stdio"]);
                 c.args([
                     "--permission-mode",
                     if opts.auto_approve {
                         "bypassPermissions"
                     } else {
-                        "acceptEdits"
+                        "default"
                     },
                 ]);
                 if let Some(id) = resume {
                     c.args(["--resume", id]);
                 }
-                c.arg("--").arg(prompt);
             }
             Provider::Opencode => {
-                c.args(["run", "--format", "json"]);
-                if opts.auto_approve {
-                    c.arg("--auto");
-                }
-                if let Some(id) = resume {
-                    c.args(["-s", id]);
-                }
-                c.arg("--").arg(prompt);
+                c.arg("acp").arg("--cwd").arg(cwd);
+                // opencode allows everything unless configured otherwise.
+                let ask = if opts.auto_approve { "allow" } else { "ask" };
+                let perm = json!({ "permission": { "edit": ask, "bash": ask, "webfetch": ask } });
+                c.env("OPENCODE_CONFIG_CONTENT", perm.to_string());
             }
             Provider::Codex => {
-                c.args(["exec", "--json", "--skip-git-repo-check"]);
-                c.arg(if opts.auto_approve {
-                    "--dangerously-bypass-approvals-and-sandbox"
-                } else {
-                    "--full-auto"
-                });
-                if let Some(id) = resume {
-                    c.args(["resume", id]);
-                }
-                c.arg("--").arg(prompt);
+                c.arg("app-server");
             }
         }
+        // Some read the directory from `PWD`, which is the daemon's.
         c.current_dir(cwd)
-            .stdin(Stdio::null())
+            .env("PWD", cwd)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         c
     }
 
-    /// Interprets one output line.
-    pub fn parse_line(self, line: &str) -> Vec<Event> {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            return vec![];
-        };
+    fn driver(self, start: Start) -> Box<dyn Driver> {
         match self {
-            Provider::Claude => parse_claude(&v),
-            Provider::Opencode => parse_opencode(&v),
-            Provider::Codex => parse_codex(&v),
+            Provider::Claude => Box::new(claude::Claude::new(start)),
+            Provider::Opencode => Box::new(acp::Acp::new(start)),
+            Provider::Codex => Box::new(codex::Codex::new(start)),
         }
     }
 }
@@ -137,99 +206,31 @@ fn str_of<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
     path.iter().try_fold(v, |v, k| v.get(k))?.as_str()
 }
 
-fn parse_claude(v: &Value) -> Vec<Event> {
-    let mut out = vec![];
-    if let Some(id) = str_of(v, &["session_id"]) {
-        out.push(Event::Session(id.into()));
+fn tool(id: &str, name: &str, input: Value) -> Event {
+    Event::Tool {
+        id: id.into(),
+        name: name.into(),
+        summary: tool_line(name, &input),
+        input,
     }
-    match str_of(v, &["type"]) {
-        Some("assistant") => {
-            for block in v["message"]["content"].as_array().into_iter().flatten() {
-                match str_of(block, &["type"]) {
-                    Some("text") => {
-                        out.extend(str_of(block, &["text"]).map(|t| Event::Text(t.into())))
-                    }
-                    Some("tool_use") => {
-                        let name = str_of(block, &["name"]).unwrap_or("tool");
-                        out.push(Event::Tool(tool_line(name, &block["input"])));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Some("result") => {
-            if v["is_error"].as_bool() == Some(true) {
-                let why = str_of(v, &["result"])
-                    .or(str_of(v, &["subtype"]))
-                    .unwrap_or("the agent failed");
-                out.push(Event::Error(why.into()));
-            }
-            out.push(Event::Done);
-        }
-        _ => {}
-    }
-    out
 }
 
-fn parse_opencode(v: &Value) -> Vec<Event> {
-    let mut out = vec![];
-    if let Some(id) = str_of(v, &["sessionID"]) {
-        out.push(Event::Session(id.into()));
-    }
-    match str_of(v, &["type"]) {
-        Some("text") => out.extend(str_of(v, &["part", "text"]).map(|t| Event::Text(t.into()))),
-        Some("tool_use") | Some("tool") => {
-            let part = &v["part"];
-            let name = str_of(part, &["tool"]).unwrap_or("tool");
-            out.push(Event::Tool(tool_line(name, &part["state"]["input"])));
-        }
-        Some("error") => {
-            let why = str_of(v, &["error", "data", "message"])
-                .or(str_of(v, &["error", "name"]))
-                .unwrap_or("the agent failed");
-            out.push(Event::Error(why.into()));
-        }
-        _ => {}
-    }
-    out
-}
-
-fn parse_codex(v: &Value) -> Vec<Event> {
-    match str_of(v, &["type"]) {
-        Some("thread.started") => str_of(v, &["thread_id"])
-            .map(|i| Event::Session(i.into()))
-            .into_iter()
-            .collect(),
-        Some("item.completed") => {
-            let item = &v["item"];
-            match str_of(item, &["type"]) {
-                Some("agent_message") => str_of(item, &["text"])
-                    .map(|t| Event::Text(t.into()))
-                    .into_iter()
-                    .collect(),
-                Some("command_execution") => {
-                    vec![Event::Tool(format!(
-                        "shell: {}",
-                        str_of(item, &["command"]).unwrap_or("")
-                    ))]
-                }
-                Some("file_change") => vec![Event::Tool("edit files".into())],
-                _ => vec![],
-            }
-        }
-        Some("turn.completed") => vec![Event::Done],
-        Some("turn.failed") | Some("error") => {
-            let why = str_of(v, &["error", "message"])
-                .or(str_of(v, &["message"]))
-                .unwrap_or("the agent failed");
-            vec![Event::Error(why.into())]
-        }
-        _ => vec![],
+/// A tool result's text: a string, or the text blocks of a list.
+fn content_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|b| b["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Null => String::new(),
+        v => v.to_string(),
     }
 }
 
 /// `Read: src/main.rs`, `Bash: cargo test`.
-fn tool_line(name: &str, input: &Value) -> String {
+pub fn tool_line(name: &str, input: &Value) -> String {
     let arg = [
         "file_path",
         "filePath",
@@ -237,6 +238,7 @@ fn tool_line(name: &str, input: &Value) -> String {
         "command",
         "pattern",
         "url",
+        "query",
         "description",
     ]
     .iter()
@@ -263,8 +265,10 @@ fn which(name: &str) -> Option<PathBuf> {
 pub struct Turn {
     child: tokio::process::Child,
     lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
-    provider: Provider,
+    driver: Box<dyn Driver>,
     stderr: tokio::task::JoinHandle<String>,
+    /// Lines for the agent's stdin; dropping it closes stdin.
+    stdin: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     done: bool,
 }
 
@@ -276,7 +280,7 @@ impl Turn {
         prompt: &str,
         resume: Option<&str>,
     ) -> std::io::Result<Turn> {
-        let mut child = provider.command(opts, cwd, prompt, resume).spawn()?;
+        let mut child = provider.command(opts, cwd, resume).spawn()?;
         let stdout = child.stdout.take().expect("piped");
         let mut err = child.stderr.take().expect("piped");
         let stderr = tokio::spawn(async move {
@@ -284,35 +288,72 @@ impl Turn {
             let _ = tokio::io::AsyncReadExt::read_to_string(&mut err, &mut s).await;
             s
         });
-        Ok(Turn {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(write_lines(child.stdin.take().expect("piped"), rx));
+        let driver = provider.driver(Start {
+            prompt: prompt.into(),
+            resume: resume.map(Into::into),
+            cwd: cwd.to_string_lossy().into_owned(),
+            auto_approve: opts.auto_approve,
+        });
+        let mut turn = Turn {
             child,
             lines: BufReader::new(stdout).lines(),
-            provider,
+            driver,
             stderr,
+            stdin: Some(tx),
             done: false,
-        })
+        };
+        let mut w = vec![];
+        turn.driver.start(&mut w);
+        turn.write(w);
+        Ok(turn)
+    }
+
+    fn write(&self, w: Vec<Value>) {
+        if let Some(tx) = &self.stdin {
+            for v in w {
+                let _ = tx.send(format!("{v}\n"));
+            }
+        }
+    }
+
+    /// Answers an [`Event::Ask`].
+    pub fn answer(&mut self, request: &str, answer: Answer) {
+        let mut w = vec![];
+        self.driver.answer(request, answer, &mut w);
+        self.write(w);
     }
 
     /// The next events; `None` when the turn is over. A process that exits
     /// without finishing the turn yields an error with its stderr, then `Done`.
+    /// Cancel-safe.
     pub async fn next(&mut self) -> Option<Vec<Event>> {
         if self.done {
+            // Give the agent a moment to exit by itself.
+            let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
             return None;
         }
         loop {
             match self.lines.next_line().await {
                 Ok(Some(line)) => {
-                    let events = self.provider.parse_line(&line);
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    let mut w = vec![];
+                    let events = self.driver.line(v, &mut w);
+                    self.write(w);
                     if events.is_empty() {
                         continue;
                     }
                     if events.contains(&Event::Done) {
                         self.done = true;
+                        // The agents wait for more otherwise.
+                        self.stdin = None;
                     }
                     return Some(events);
                 }
                 _ => {
-                    self.done = true;
                     let status = self.child.wait().await.ok();
                     let mut events = vec![];
                     if status.is_some_and(|s| !s.success()) {
@@ -331,8 +372,11 @@ impl Turn {
                         } else {
                             tail
                         }));
+                    } else {
+                        events.push(Event::Error("the agent stopped before answering".into()));
                     }
                     events.push(Event::Done);
+                    self.done = true;
                     return Some(events);
                 }
             }
@@ -344,64 +388,30 @@ impl Turn {
     }
 }
 
+async fn write_lines(mut w: ChildStdin, mut rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
+    while let Some(line) = rx.recv().await {
+        if w.write_all(line.as_bytes()).await.is_err() || w.flush().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Feeds lines to a driver, for the tests: the events and the lines written.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn claude_lines() {
-        let p = Provider::Claude;
-        assert_eq!(
-            p.parse_line(r#"{"type":"system","subtype":"init","session_id":"s1"}"#),
-            vec![Event::Session("s1".into())]
-        );
-        assert_eq!(
-            p.parse_line(r#"{"type":"assistant","session_id":"s1","message":{"content":[{"type":"text","text":"Hi"},{"type":"tool_use","name":"Read","input":{"file_path":"a.rs"}}]}}"#),
-            vec![Event::Session("s1".into()), Event::Text("Hi".into()), Event::Tool("Read: a.rs".into())]
-        );
-        assert_eq!(
-            p.parse_line(r#"{"type":"result","is_error":true,"result":"boom"}"#),
-            vec![Event::Error("boom".into()), Event::Done]
-        );
-        assert!(p.parse_line("not json").is_empty());
+fn feed(d: &mut dyn Driver, lines: &[&str]) -> (Vec<Event>, Vec<Value>) {
+    let (mut events, mut w) = (vec![], vec![]);
+    for l in lines {
+        events.extend(d.line(serde_json::from_str(l).unwrap(), &mut w));
     }
+    (events, w)
+}
 
-    #[test]
-    fn opencode_lines() {
-        let p = Provider::Opencode;
-        assert_eq!(
-            p.parse_line(
-                r#"{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"Hi there."}}"#
-            ),
-            vec![
-                Event::Session("ses_1".into()),
-                Event::Text("Hi there.".into())
-            ]
-        );
-        assert_eq!(
-            p.parse_line(
-                r#"{"type":"tool_use","part":{"tool":"bash","state":{"input":{"command":"ls"}}}}"#
-            ),
-            vec![Event::Tool("bash: ls".into())]
-        );
-    }
-
-    #[test]
-    fn codex_lines() {
-        let p = Provider::Codex;
-        assert_eq!(
-            p.parse_line(r#"{"type":"thread.started","thread_id":"t1"}"#),
-            vec![Event::Session("t1".into())]
-        );
-        assert_eq!(
-            p.parse_line(
-                r#"{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}"#
-            ),
-            vec![Event::Text("ok".into())]
-        );
-        assert_eq!(
-            p.parse_line(r#"{"type":"turn.completed"}"#),
-            vec![Event::Done]
-        );
+#[cfg(test)]
+fn test_start(resume: Option<&str>) -> Start {
+    Start {
+        prompt: "hi".into(),
+        resume: resume.map(Into::into),
+        cwd: "/p".into(),
+        auto_approve: false,
     }
 }

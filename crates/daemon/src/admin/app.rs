@@ -436,7 +436,7 @@ impl Admin {
             checkbox("auto")
                 .parent("agents-body")
                 .variant("switch")
-                .label("Let agents run tools without asking (nobody is there to approve)")
+                .label("Let agents run tools without asking (otherwise they ask the app)")
                 .bind("auto")
                 .on_change(Handler::action("set_auto")),
         );

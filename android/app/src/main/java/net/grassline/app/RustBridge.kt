@@ -23,5 +23,8 @@ object RustBridge {
     @JvmStatic external fun open(id: String)
     @JvmStatic external fun send(id: String, text: String)
     @JvmStatic external fun stop(id: String)
+
+    /** Answers the [Ask] whose request is [request]; [decision] is a `Decision` as JSON. */
+    @JvmStatic external fun decide(id: String, request: String, decision: String)
     @JvmStatic external fun dismissError()
 }

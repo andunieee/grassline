@@ -186,12 +186,25 @@ impl Controller {
         self.send(ClientMsg::Stop { id: id.into() });
     }
 
+    /// Answers what a tool call asks (its `tool.ask.request`). `decision` is a
+    /// `grassline_proto::Decision` as JSON.
+    pub fn decide(&self, id: &str, request: &str, decision: &str) -> Result<(), String> {
+        let decision = serde_json::from_str(decision).map_err(|e| e.to_string())?;
+        self.send(ClientMsg::Decide {
+            id: id.into(),
+            request: request.into(),
+            decision,
+        });
+        Ok(())
+    }
+
     pub fn dismiss_error(&self) {
         self.shared.edit(|s| s.error = None);
     }
 
     /// The state as JSON: `status`, `reason`, `projects`, `sessions` (most
-    /// recent first), `messages` (by session id), `error` and `key`.
+    /// recent first), `messages` (by session id; a tool call's `tool` has its
+    /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {
         let s = self.shared.state.lock().unwrap();
         let mut v = serde_json::to_value(s.status.clone().unwrap_or(Status::Connecting)).unwrap();

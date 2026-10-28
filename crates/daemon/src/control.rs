@@ -164,6 +164,11 @@ async fn handle(
             }
         }
         ClientMsg::Stop { id } => core.stop(&id),
+        ClientMsg::Decide {
+            id,
+            request,
+            decision,
+        } => core.decide(&id, &request, decision),
     }
     Ok(())
 }

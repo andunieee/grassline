@@ -1,17 +1,25 @@
 //! The daemon's state: settings, projects, and the agent sessions.
 
 use crate::config::Config;
-use grassline_agents::{Event, Provider, Turn};
-use grassline_proto::{Message, Project, Role, SessionInfo};
+use grassline_agents::{Answer, Event, Provider, Turn};
+use grassline_proto::{
+    Ask, Choice, Decision, Message, Project, Question, Role, SessionInfo, ToolCall, ToolStatus,
+};
+
+/// The requests the agent waits for: the tool call's message index, and the
+/// tool.
+type Asks = HashMap<String, (usize, String)>;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 const TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
+/// How much of a tool's output is kept.
+const OUTPUT_MAX: usize = 4000;
 
 /// What changed in a session, for the connected controllers and the admin.
 #[derive(Debug, Clone)]
@@ -30,6 +38,15 @@ struct Session {
     /// The provider's own id for the conversation.
     provider_session: Option<String>,
     messages: Vec<Message>,
+    /// Tools the user allowed for the whole session.
+    #[serde(default)]
+    allowed: Vec<String>,
+}
+
+/// What a controller asks of a running turn.
+enum Control {
+    Stop,
+    Decide { request: String, decision: Decision },
 }
 
 pub struct Core {
@@ -40,7 +57,7 @@ pub struct Core {
     changes: watch::Sender<u64>,
     sessions: Mutex<HashMap<String, Session>>,
     updates: broadcast::Sender<Update>,
-    stops: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    turns: Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>,
     tokens: Mutex<Vec<(String, Instant)>>,
     /// The iroh endpoint id, once the endpoint is up.
     pub endpoint_id: OnceLock<String>,
@@ -72,6 +89,8 @@ impl Core {
                 match serde_json::from_str::<Session>(&s) {
                     Ok(mut s) => {
                         s.info.running = false;
+                        s.info.waiting = false;
+                        settle_tools(&mut s.messages);
                         sessions.insert(s.info.id.clone(), s);
                     }
                     Err(e2) => eprintln!("{}: {e2}", e.path().display()),
@@ -85,7 +104,7 @@ impl Core {
             changes: watch::channel(0).0,
             sessions: Mutex::new(sessions),
             updates: broadcast::channel(1024).0,
-            stops: Default::default(),
+            turns: Default::default(),
             tokens: Default::default(),
             endpoint_id: OnceLock::new(),
             online: AtomicBool::new(false),
@@ -246,6 +265,7 @@ impl Core {
             created: now,
             updated: now,
             running: false,
+            waiting: false,
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
@@ -253,6 +273,7 @@ impl Core {
                 info: info.clone(),
                 provider_session: None,
                 messages: vec![],
+                allowed: vec![],
             },
         );
         self.save(&info.id);
@@ -267,8 +288,23 @@ impl Core {
     }
 
     pub fn stop(&self, id: &str) {
-        if let Some(n) = self.stops.lock().unwrap().get(id) {
-            n.notify_one();
+        self.control(id, Control::Stop);
+    }
+
+    /// Answers what a tool call of the running turn asks.
+    pub fn decide(&self, id: &str, request: &str, decision: Decision) {
+        self.control(
+            id,
+            Control::Decide {
+                request: request.into(),
+                decision,
+            },
+        );
+    }
+
+    fn control(&self, id: &str, c: Control) {
+        if let Some(tx) = self.turns.lock().unwrap().get(id) {
+            let _ = tx.send(c);
         }
     }
 
@@ -285,13 +321,9 @@ impl Core {
     }
 
     /// Adds a message (or text to the last assistant message when `append`),
-    /// and tells the watchers.
-    fn push(&self, id: &str, role: Role, text: String, append: bool) {
-        let update = {
-            let mut map = self.sessions.lock().unwrap();
-            let Some(s) = map.get_mut(id) else { return };
-            let now = now_ms();
-            s.info.updated = now;
+    /// and tells the watchers. Returns its index.
+    fn push(&self, id: &str, role: Role, text: String, append: bool) -> Option<usize> {
+        self.change(id, |s, now| {
             match s.messages.last_mut() {
                 Some(m) if append && m.role == role => {
                     m.text.push_str("\n\n");
@@ -302,6 +334,7 @@ impl Core {
                     role,
                     text,
                     ts: now,
+                    tool: None,
                 }),
             }
             let index = s.messages.len() - 1;
@@ -315,14 +348,67 @@ impl Core {
                     .take(80)
                     .collect();
             }
+            Some(index)
+        })
+    }
+
+    /// Adds streamed text to the last assistant message.
+    fn extend(&self, id: &str, text: &str) {
+        self.change(id, |s, now| {
+            let m = s
+                .messages
+                .last_mut()
+                .filter(|m| m.role == Role::Assistant)?;
+            m.text.push_str(text);
+            m.ts = now;
+            Some(s.messages.len() - 1)
+        });
+    }
+
+    fn push_tool(&self, id: &str, summary: String, call: ToolCall) -> Option<usize> {
+        self.change(id, |s, now| {
+            s.messages.push(Message {
+                role: Role::Tool,
+                text: summary,
+                ts: now,
+                tool: Some(call),
+            });
+            Some(s.messages.len() - 1)
+        })
+    }
+
+    /// Changes the tool call at `index`, and tells the watchers.
+    fn edit_tool(&self, id: &str, index: usize, f: impl FnOnce(&mut ToolCall)) {
+        self.change(id, |s, now| {
+            let m = s.messages.get_mut(index)?;
+            f(m.tool.as_mut()?);
+            m.ts = now;
+            Some(index)
+        });
+    }
+
+    /// Runs `f` on the session; when it returns the index of a message it
+    /// changed, tells the watchers.
+    fn change(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut Session, u64) -> Option<usize>,
+    ) -> Option<usize> {
+        let (info, index, message) = {
+            let mut map = self.sessions.lock().unwrap();
+            let s = map.get_mut(id)?;
+            let now = now_ms();
+            let index = f(s, now)?;
+            s.info.updated = now;
             (s.info.clone(), index, s.messages[index].clone())
         };
         let _ = self.updates.send(Update::Msg {
             id: id.into(),
-            index: update.1,
-            message: update.2,
+            index,
+            message,
         });
-        let _ = self.updates.send(Update::Session(update.0));
+        let _ = self.updates.send(Update::Session(info));
+        Some(index)
     }
 
     fn set_running(&self, id: &str, running: bool) {
@@ -330,6 +416,7 @@ impl Core {
             let mut map = self.sessions.lock().unwrap();
             let Some(s) = map.get_mut(id) else { return };
             s.info.running = running;
+            s.info.waiting &= running;
             s.info.updated = now_ms();
             s.info.clone()
         };
@@ -359,7 +446,7 @@ impl Core {
         let provider = Provider::from_name(&provider).ok_or("unknown agent")?;
         let opts = self.config().options(provider);
         let turn = Turn::start(provider, &opts, Path::new(&path), text, resume.as_deref());
-        let mut turn = match turn {
+        let turn = match turn {
             Ok(t) => t,
             Err(e) => {
                 self.set_running(id, false);
@@ -367,51 +454,315 @@ impl Core {
             }
         };
         self.push(id, Role::User, text.into(), false);
-        let stop = Arc::new(tokio::sync::Notify::new());
-        self.stops.lock().unwrap().insert(id.into(), stop.clone());
-        let (core, id) = (self.clone(), id.to_string());
-        tokio::spawn(async move {
-            // Text after a tool call starts a new message.
-            let mut appending = false;
-            loop {
-                let events = tokio::select! {
-                    e = turn.next() => e,
-                    _ = stop.notified() => {
-                        turn.kill().await;
-                        core.push(&id, Role::Error, "stopped".into(), false);
-                        break;
-                    }
-                };
-                let Some(events) = events else { break };
-                for ev in events {
-                    match ev {
-                        Event::Session(sid) => {
-                            if let Some(s) = core.sessions.lock().unwrap().get_mut(&id) {
-                                s.provider_session = Some(sid);
-                            }
-                        }
-                        Event::Text(t) => {
-                            core.push(&id, Role::Assistant, t, appending);
-                            appending = true;
-                        }
-                        Event::Tool(t) => {
-                            core.push(&id, Role::Tool, t, false);
-                            appending = false;
-                        }
-                        Event::Error(e) => {
-                            core.push(&id, Role::Error, e, false);
-                            appending = false;
-                        }
-                        Event::Done => {}
-                    }
-                }
-            }
-            core.stops.lock().unwrap().remove(&id);
-            core.set_running(&id, false);
-            core.save(&id);
-        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.turns.lock().unwrap().insert(id.into(), tx);
+        tokio::spawn(self.clone().run(id.to_string(), turn, rx));
         Ok(())
     }
+
+    async fn run(
+        self: Arc<Self>,
+        id: String,
+        mut turn: Turn,
+        mut rx: mpsc::UnboundedReceiver<Control>,
+    ) {
+        // Text after a tool call starts a new message.
+        let mut appending = false;
+        // The message index of each tool call, by its id.
+        let mut tools = HashMap::<String, usize>::new();
+        let mut asks = Asks::new();
+        loop {
+            self.set_waiting(&id, !asks.is_empty());
+            let events = tokio::select! {
+                e = turn.next() => e,
+                c = rx.recv() => {
+                    match c {
+                        Some(Control::Decide { request, decision }) => {
+                            self.decided(&id, &mut turn, &mut asks, &request, decision)
+                        }
+                        Some(Control::Stop) | None => {
+                            turn.kill().await;
+                            self.push(&id, Role::Error, "stopped".into(), false);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            };
+            let Some(events) = events else { break };
+            for ev in events {
+                match ev {
+                    Event::Session(sid) => {
+                        if let Some(s) = self.sessions.lock().unwrap().get_mut(&id) {
+                            s.provider_session = Some(sid);
+                        }
+                    }
+                    Event::Text(t) => {
+                        self.push(&id, Role::Assistant, t, appending);
+                        appending = true;
+                    }
+                    Event::Delta(t) => {
+                        if appending {
+                            self.extend(&id, &t);
+                        } else {
+                            self.push(&id, Role::Assistant, t, false);
+                            appending = true;
+                        }
+                    }
+                    Event::Tool {
+                        id: tool_id,
+                        name,
+                        summary,
+                        input,
+                    } => {
+                        appending = false;
+                        if let Some(&index) = tools.get(&tool_id).filter(|_| !tool_id.is_empty()) {
+                            // Its input became known.
+                            let input = pretty(&input);
+                            self.change(&id, |s, _| {
+                                let m = s.messages.get_mut(index)?;
+                                m.text = summary;
+                                m.tool.as_mut()?.input = input;
+                                Some(index)
+                            });
+                        } else {
+                            let call = ToolCall {
+                                id: tool_id.clone(),
+                                name,
+                                input: pretty(&input),
+                                status: ToolStatus::Running,
+                                output: None,
+                                ask: None,
+                            };
+                            if let Some(index) = self.push_tool(&id, summary, call) {
+                                tools.insert(tool_id, index);
+                            }
+                        }
+                    }
+                    Event::ToolResult {
+                        id: tool_id,
+                        output,
+                        error,
+                    } => {
+                        if let Some(&index) = tools.get(&tool_id) {
+                            self.edit_tool(&id, index, |t| {
+                                if t.status != ToolStatus::Denied {
+                                    t.status = if error {
+                                        ToolStatus::Failed
+                                    } else {
+                                        ToolStatus::Done
+                                    };
+                                }
+                                t.output = Some(clip(&output));
+                                t.ask = None;
+                            });
+                        }
+                    }
+                    Event::Ask {
+                        request,
+                        tool_id,
+                        name,
+                        input,
+                        questions,
+                    } => {
+                        if questions.is_empty() && self.is_allowed(&id, &name) {
+                            turn.answer(&request, Answer::allow());
+                            continue;
+                        }
+                        let questions = questions.into_iter().map(question).collect();
+                        let known = tool_id.as_ref().and_then(|t| tools.get(t)).copied();
+                        let index = known.or_else(|| {
+                            let call = ToolCall {
+                                id: tool_id.clone().unwrap_or_default(),
+                                name: name.clone(),
+                                input: pretty(&input),
+                                status: ToolStatus::Running,
+                                output: None,
+                                ask: None,
+                            };
+                            let index = self.push_tool(
+                                &id,
+                                grassline_agents::tool_line(&name, &input),
+                                call,
+                            )?;
+                            tools.insert(tool_id.unwrap_or_default(), index);
+                            Some(index)
+                        });
+                        let Some(index) = index else { continue };
+                        appending = false;
+                        let ask = Ask {
+                            request: request.clone(),
+                            questions,
+                        };
+                        self.edit_tool(&id, index, |t| {
+                            t.status = ToolStatus::Waiting;
+                            t.ask = Some(ask);
+                        });
+                        asks.insert(request, (index, name));
+                    }
+                    Event::AskCancelled(request) => {
+                        if let Some((index, ..)) = asks.remove(&request) {
+                            self.edit_tool(&id, index, |t| {
+                                t.status = ToolStatus::Running;
+                                t.ask = None;
+                            });
+                        }
+                    }
+                    Event::Error(e) => {
+                        self.push(&id, Role::Error, e, false);
+                        appending = false;
+                    }
+                    Event::Done => {}
+                }
+            }
+        }
+        self.turns.lock().unwrap().remove(&id);
+        let settled = match self.sessions.lock().unwrap().get_mut(&id) {
+            Some(s) => settle_tools(&mut s.messages),
+            None => vec![],
+        };
+        for index in settled {
+            self.edit_tool(&id, index, |_| {});
+        }
+        self.set_running(&id, false);
+        self.save(&id);
+    }
+
+    /// Answers the agent with what a controller decided.
+    fn decided(
+        &self,
+        id: &str,
+        turn: &mut Turn,
+        asks: &mut Asks,
+        request: &str,
+        decision: Decision,
+    ) {
+        // Another controller may have answered first.
+        let Some((index, name)) = asks.remove(request) else {
+            return;
+        };
+        if decision.allow && decision.always {
+            self.allow_always(id, &name);
+            // The same tool may be waiting in another call.
+            let same: Vec<String> = asks
+                .iter()
+                .filter(|(_, a)| a.1 == name)
+                .map(|(r, _)| r.clone())
+                .collect();
+            for r in same {
+                let (index, _) = asks.remove(&r).unwrap();
+                let allow = Decision {
+                    allow: true,
+                    ..Default::default()
+                };
+                self.answer(id, turn, &r, index, allow);
+            }
+        }
+        self.answer(id, turn, request, index, decision);
+    }
+
+    fn answer(&self, id: &str, turn: &mut Turn, request: &str, index: usize, decision: Decision) {
+        let allow = decision.allow;
+        let answer = if allow {
+            Answer::Allow {
+                answers: decision.answers,
+            }
+        } else {
+            Answer::Deny(
+                decision
+                    .message
+                    .filter(|m| !m.trim().is_empty())
+                    .map(|m| format!("The user denied this: {m}"))
+                    .unwrap_or_else(|| "The user denied this.".into()),
+            )
+        };
+        turn.answer(request, answer);
+        self.edit_tool(id, index, |t| {
+            t.status = if allow {
+                ToolStatus::Running
+            } else {
+                ToolStatus::Denied
+            };
+            t.ask = None;
+        });
+    }
+
+    fn set_waiting(&self, id: &str, waiting: bool) {
+        let info = {
+            let mut map = self.sessions.lock().unwrap();
+            let Some(s) = map.get_mut(id) else { return };
+            if s.info.waiting == waiting {
+                return;
+            }
+            s.info.waiting = waiting;
+            s.info.clone()
+        };
+        let _ = self.updates.send(Update::Session(info));
+    }
+
+    fn is_allowed(&self, id: &str, tool: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|s| s.allowed.iter().any(|t| t == tool))
+    }
+
+    fn allow_always(&self, id: &str, tool: &str) {
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(id) {
+            if !s.allowed.iter().any(|t| t == tool) {
+                s.allowed.push(tool.into());
+            }
+        }
+        self.save(id);
+    }
+}
+
+/// Marks the tool calls that will not finish any more (the turn is over);
+/// returns their indices.
+fn settle_tools(messages: &mut [Message]) -> Vec<usize> {
+    let mut out = vec![];
+    for (i, m) in messages.iter_mut().enumerate() {
+        if let Some(t) = m.tool.as_mut() {
+            if matches!(t.status, ToolStatus::Running | ToolStatus::Waiting) {
+                t.status = ToolStatus::Failed;
+                t.ask = None;
+                out.push(i);
+            }
+        }
+    }
+    out
+}
+
+fn question(q: grassline_agents::Question) -> Question {
+    Question {
+        question: q.question,
+        header: q.header,
+        multi: q.multi,
+        options: q
+            .options
+            .into_iter()
+            .map(|o| Choice {
+                label: o.label,
+                description: o.description,
+            })
+            .collect(),
+    }
+}
+
+fn pretty(v: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
+fn clip(s: &str) -> String {
+    if s.len() <= OUTPUT_MAX {
+        return s.into();
+    }
+    let mut end = OUTPUT_MAX;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n…", &s[..end])
 }
 
 /// Expands a leading `~/`.
