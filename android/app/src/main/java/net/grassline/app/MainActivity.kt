@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.mikepenz.markdown.m3.Markdown
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -311,7 +312,7 @@ fun Bubble(sessionId: String, m: ChatMessage) {
             }
         }
         "error" -> Text(m.text, color = MaterialTheme.colorScheme.error)
-        else -> Text(m.text)
+        else -> Markdown(m.text)
     }
 }
 
@@ -370,7 +371,7 @@ fun PermissionCard(sessionId: String, summary: String, t: ToolCall, ask: Ask) {
         Column(Modifier.padding(12.dp)) {
             Text(if (plan != null) "Approve the plan?" else "Allow ${t.name}?", style = MaterialTheme.typography.titleSmall)
             if (plan != null) {
-                Text(plan, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodySmall)
+                Markdown(plan, modifier = Modifier.padding(top = 4.dp))
             } else {
                 Text(summary, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.outline)
                 Code(t.input, maxLines = 12)
