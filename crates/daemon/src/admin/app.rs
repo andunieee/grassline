@@ -5,7 +5,7 @@ use crate::core::random_hex;
 use crate::core::{now_ms, Core};
 use grassline_agents::ALL;
 use hypereffect::ui::*;
-use hypereffect::{json, Action, App, Element, Handler, Outbox, Value};
+use hypereffect::{json, Action, App, Element, Handler, Metadata, Outbox, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -528,6 +528,11 @@ fn serde_json_string<T: serde::Serialize>(v: &T) -> String {
 
 impl App for Admin {
     fn hello(&mut self, out: &mut Outbox, _: &BTreeMap<String, String>) {
+        out.metadata(
+            Metadata::new()
+                .name("Grassline")
+                .description("Runs coding agents for the Grassline app"),
+        );
         out.signal(self.signals());
         self.render(out);
     }
@@ -672,6 +677,7 @@ mod tests {
         let _ = core.endpoint_id.set("e".repeat(52));
         install(core);
         let mut l = Loopback::<Admin>::new();
+        assert_eq!(l.client.metadata().name.as_deref(), Some("Grassline"));
         assert!(l.trigger("pair", "onPress"));
         let src = l.client.attr("ticket-qr", "src").expect("a QR code");
         assert!(src.as_str().unwrap().starts_with("data:image/png;base64,"));
