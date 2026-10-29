@@ -23,6 +23,10 @@ const TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
 /// How much of a tool's output is kept.
 const OUTPUT_MAX: usize = 4000;
+/// How much of the conversation so far an agent that takes it over gets.
+const HANDOVER_MAX: usize = 40_000;
+/// How much of a tool call's line it gets.
+const HANDOVER_TOOL_MAX: usize = 300;
 
 /// What changed in a session, for the connected controllers and the admin.
 #[derive(Debug, Clone)]
@@ -276,7 +280,8 @@ impl Core {
         Ok(())
     }
 
-    /// Switches a session to another agent, which starts a new conversation.
+    /// Switches a session to another agent, which starts a new conversation
+    /// that begins with what happened so far.
     pub fn set_agent(&self, id: &str, name: &str) -> Result<(), String> {
         let provider = self.installed(name)?;
         let model = self.default_model(provider.name());
@@ -650,7 +655,12 @@ impl Core {
                 .unwrap_or(0);
             s.info.running = true;
             let queued = s.info.queue.remove(at);
-            let prompt = queued.text.clone();
+            // No conversation of its own yet, as after switching agents: it
+            // gets what happened so far.
+            let prompt = match s.provider_session {
+                None => handover(&s.messages, &queued.text),
+                Some(_) => queued.text.clone(),
+            };
             (
                 s.info.provider.clone(),
                 s.info.path.clone(),
@@ -1066,6 +1076,48 @@ fn clip(s: &str) -> String {
     format!("{}\n…", &s[..end])
 }
 
+/// `text` for an agent that takes over the conversation, after what happened
+/// so far: the messages, and each tool call in one line without its output.
+/// Past [`HANDOVER_MAX`] the oldest are left out.
+fn handover(messages: &[Message], text: &str) -> String {
+    let mut lines = vec![];
+    let mut size = 0;
+    for m in messages.iter().rev() {
+        let line = match m.role {
+            Role::User => format!("[user] {}", m.text),
+            Role::Assistant => format!("[agent] {}", m.text),
+            Role::Error => format!("[error] {}", m.text),
+            Role::Tool => {
+                let mut line: String = m.text.lines().next().unwrap_or("").into();
+                if line.chars().count() > HANDOVER_TOOL_MAX {
+                    line = line.chars().take(HANDOVER_TOOL_MAX).collect::<String>() + "…";
+                }
+                let status = match m.tool.as_ref().map(|t| t.status) {
+                    Some(ToolStatus::Failed) => " (failed)",
+                    Some(ToolStatus::Denied) => " (denied by the user)",
+                    _ => "",
+                };
+                format!("[tool] {line}{status}")
+            }
+        };
+        size += line.len();
+        if size > HANDOVER_MAX {
+            lines.push("[the earlier part is left out]".to_string());
+            break;
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        return text.into();
+    }
+    lines.reverse();
+    format!(
+        "This conversation started before you joined it, likely with another agent, \
+         so it is not in your history. What happened so far:\n\n{}\n\n---\n\n{text}",
+        lines.join("\n\n")
+    )
+}
+
 /// Expands a leading `~/`.
 pub fn expand(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
@@ -1199,15 +1251,81 @@ while True:
         let queue = info(&core, &id).queue;
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].text, "two");
-        // Sent now, it starts the next turn.
+        // Sent now, it starts the next turn; stopped before the agent had a
+        // conversation, the next one gets the stopped message too.
         core.send_now(&id, &queue[0].id).unwrap();
         until("the answer", || {
-            texts(&core, &id)
-                .last()
-                .is_some_and(|m| m.0 == Role::Assistant && m.1.ends_with("two"))
-                && !info(&core, &id).running
+            texts(&core, &id).last().is_some_and(|m| {
+                m.0 == Role::Assistant && m.1.ends_with("[error] stopped\n\n---\n\ntwo")
+            }) && !info(&core, &id).running
         })
         .await;
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_new_agent_gets_the_conversation_so_far() {
+        let (core, id, dir) = core("handover");
+        core.send(&id, "one").unwrap();
+        until("the answer", || !info(&core, &id).running).await;
+        // As after switching agents.
+        core.sessions
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .provider_session = None;
+        core.send(&id, "two").unwrap();
+        until("the second answer", || {
+            !info(&core, &id).running && texts(&core, &id).len() == 4
+        })
+        .await;
+        let m = texts(&core, &id);
+        // The user sees what they wrote; the agent got the rest before it.
+        assert_eq!(m[2], (Role::User, "two".into()));
+        assert!(
+            m[3].1.contains("[user] one\n\n[agent] one\n\n---\n\ntwo"),
+            "{}",
+            m[3].1
+        );
+        // Once it has a conversation of its own, it only gets the message.
+        core.send(&id, "three").unwrap();
+        until("the third answer", || {
+            !info(&core, &id).running && texts(&core, &id).len() == 6
+        })
+        .await;
+        assert_eq!(texts(&core, &id)[5].1, "three");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn handover_leaves_out_the_oldest() {
+        let msg = |role, text: &str| Message {
+            role,
+            text: text.into(),
+            ts: 0,
+            tool: None,
+        };
+        assert_eq!(handover(&[], "hi"), "hi");
+        let old = "x".repeat(HANDOVER_MAX);
+        let mut tool = msg(Role::Tool, "bash: rm -rf build\nmore");
+        tool.tool = Some(ToolCall {
+            id: "t".into(),
+            name: "bash".into(),
+            input: "{}".into(),
+            status: ToolStatus::Denied,
+            output: Some("secret output".into()),
+            ask: None,
+        });
+        let h = handover(
+            &[msg(Role::User, &old), msg(Role::User, "recent"), tool],
+            "now",
+        );
+        assert!(!h.contains(&old));
+        assert!(!h.contains("secret output"));
+        assert!(h.contains(
+            "[the earlier part is left out]\n\n[user] recent\n\n\
+             [tool] bash: rm -rf build (denied by the user)\n\n---\n\nnow"
+        ));
     }
 }
