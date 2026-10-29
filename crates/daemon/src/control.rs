@@ -215,6 +215,16 @@ async fn handle(
                 write(send, &err(e)).await?;
             }
         }
+        ClientMsg::SendNow { id, queued } => {
+            if let Err(e) = core.send_now(&id, &queued) {
+                write(send, &err(e)).await?;
+            }
+        }
+        ClientMsg::Unqueue { id, queued } => {
+            if let Err(e) = core.unqueue(&id, &queued) {
+                write(send, &err(e)).await?;
+            }
+        }
         ClientMsg::Stop { id } => core.stop(&id),
         ClientMsg::Decide {
             id,

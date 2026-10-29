@@ -258,6 +258,21 @@ impl Controller {
         });
     }
 
+    /// Sends a queued message now (see `ClientMsg::SendNow`).
+    pub fn send_now(&self, id: &str, queued: &str) {
+        self.send(ClientMsg::SendNow {
+            id: id.into(),
+            queued: queued.into(),
+        });
+    }
+
+    pub fn unqueue(&self, id: &str, queued: &str) {
+        self.send(ClientMsg::Unqueue {
+            id: id.into(),
+            queued: queued.into(),
+        });
+    }
+
     pub fn stop(&self, id: &str) {
         self.send(ClientMsg::Stop { id: id.into() });
     }
@@ -279,9 +294,9 @@ impl Controller {
     }
 
     /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
-    /// whether each is installed), `default_agent`, `models` (by agent:
-    /// `items`, `error` and `loading`), `sessions` (most recent first, each
-    /// with its `model` and `permissions`), `transcription` (`url`, `model` and `key` of the
+    /// whether each is installed and `steers`), `default_agent`, `models` (by
+    /// agent: `items`, `error` and `loading`), `sessions` (most recent first,
+    /// each with its `model`, `permissions` and `queue`), `transcription` (`url`, `model` and `key` of the
     /// speech-to-text service, or null), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -343,6 +344,14 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     }
                 }
+                if (session.queue.isNotEmpty()) {
+                    val steers = state.agents.firstOrNull { it.name == session.provider }?.steers == true
+                    Column(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) {
+                        for (q in session.queue) {
+                            QueuedLine(session, q, steers) { draft = if (draft.isBlank()) it else draft + "\n\n" + it }
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (voice.phase == VoicePhase.Recording) {
                         TextButton(voice::cancel) { Text("✕") }
@@ -350,7 +359,15 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                     } else {
                         OutlinedTextField(
                             draft, { draft = it }, Modifier.weight(1f),
-                            placeholder = { Text(if (voice.phase == VoicePhase.Transcribing) "Transcribing…" else "Message") },
+                            placeholder = {
+                                Text(
+                                    when {
+                                        voice.phase == VoicePhase.Transcribing -> "Transcribing…"
+                                        session.running -> "Queue a message"
+                                        else -> "Message"
+                                    },
+                                )
+                            },
                             maxLines = 5, enabled = voice.phase == VoicePhase.Idle,
                         )
                     }
@@ -361,7 +378,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             enabled = state.status == "connected",
                         ) { Text("Send") }
                         voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                        session.running -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop") }
+                        session.running && draft.isBlank() -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop") }
                         draft.isBlank() && state.transcription != null -> FilledTonalButton(voice::start) { Text("🎤") }
                         else -> Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
@@ -393,6 +410,39 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             confirmButton = { TextButton({ switchTo = null; RustBridge.setAgent(session.id, to) }) { Text("Switch") } },
             dismissButton = { TextButton({ switchTo = null }) { Text("Cancel") } },
         )
+    }
+}
+
+/** A message waiting for the agent; tapping it offers to send it now, edit it or take it out. */
+@Composable
+fun QueuedLine(session: SessionInfo, q: Queued, steers: Boolean, onEdit: (String) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    val (now, about) = when {
+        !session.running -> "Send" to "Starts the agent with this message"
+        steers -> "Send now" to "The agent reads it while it works"
+        else -> "Interrupt and send" to "Stops the agent and starts it again with this message"
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.End) {
+        Box {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.widthIn(max = 320.dp).clickable(enabled = !q.steering) { menu = true },
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Text(if (q.steering) "sending…" else "queued", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(q.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(
+                    text = { Column { Text(now); Text(about, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) } },
+                    onClick = { menu = false; RustBridge.sendNow(session.id, q.id) },
+                )
+                DropdownMenuItem(text = { Text("Edit") }, onClick = { menu = false; RustBridge.unqueue(session.id, q.id); onEdit(q.text) })
+                DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; RustBridge.unqueue(session.id, q.id) })
+            }
+        }
     }
 }
 

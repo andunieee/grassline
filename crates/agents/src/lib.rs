@@ -8,6 +8,8 @@
 //! id, so the agent keeps its context between turns without a long-lived
 //! process. The lines are normalised into [`Event`]s; when the agent asks
 //! before it runs a tool ([`Event::Ask`]), it waits for [`Turn::answer`].
+//! Agents that can take more messages while they work get them with
+//! [`Turn::steer`].
 
 mod acp;
 mod claude;
@@ -66,6 +68,8 @@ pub enum Event {
     },
     /// The agent no longer waits for that answer.
     AskCancelled(String),
+    /// The agent took in the message given to [`Turn::steer`] with this key.
+    Steered(String),
     Error(String),
     /// The turn ended.
     Done,
@@ -152,6 +156,11 @@ trait Driver: Send {
     fn start(&mut self, w: &mut Vec<Value>);
     fn line(&mut self, v: Value, w: &mut Vec<Value>) -> Vec<Event>;
     fn answer(&mut self, request: &str, answer: Answer, w: &mut Vec<Value>);
+    /// Gives the agent another message while it works; false when it cannot
+    /// take one. It says when it took it in with [`Event::Steered`].
+    fn steer(&mut self, _key: &str, _text: &str, _w: &mut Vec<Value>) -> bool {
+        false
+    }
 }
 
 impl Provider {
@@ -165,6 +174,11 @@ impl Provider {
 
     pub fn from_name(name: &str) -> Option<Provider> {
         ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    /// It takes more messages while it works ([`Turn::steer`]).
+    pub fn steers(self) -> bool {
+        matches!(self, Provider::Claude | Provider::Codex)
     }
 
     /// The installed binary, if any.
@@ -181,7 +195,7 @@ impl Provider {
         match self {
             Provider::Claude => {
                 c.args(["-p", "--output-format", "stream-json", "--verbose"]);
-                c.args(["--input-format", "stream-json"]);
+                c.args(["--input-format", "stream-json", "--replay-user-messages"]);
                 c.args(["--permission-prompt-tool", "stdio"]);
                 c.args([
                     "--permission-mode",
@@ -449,6 +463,20 @@ impl Turn {
         let mut w = vec![];
         self.driver.answer(request, answer, &mut w);
         self.write(w);
+    }
+
+    /// Gives the agent another message while it works, to be taken in before
+    /// the turn ends: [`Event::Steered`] with `key` says when it was. False
+    /// when the agent cannot take it (see [`Provider::steers`]) or the turn
+    /// is ending.
+    pub fn steer(&mut self, key: &str, text: &str) -> bool {
+        if self.done || self.stdin.is_none() {
+            return false;
+        }
+        let mut w = vec![];
+        let ok = self.driver.steer(key, text, &mut w);
+        self.write(w);
+        ok
     }
 
     /// The next events; `None` when the turn is over. A process that exits

@@ -3,7 +3,8 @@
 //! the `turn/completed` notification ends the turn. Meanwhile `item/*`
 //! notifications stream the answer and the tool calls, and it asks before
 //! commands, file changes and extra permissions, and for answers to its
-//! questions (`item/tool/requestUserInput`).
+//! questions (`item/tool/requestUserInput`). `turn/steer` adds messages to
+//! the running turn.
 
 use crate::{str_of, tool, Answer, Choice, Driver, Event, Model, Permissions, Question, Start};
 use serde_json::{json, Map, Value};
@@ -13,6 +14,8 @@ const INIT: u64 = 1;
 const THREAD: u64 = 2;
 const TURN: u64 = 3;
 const MODELS: u64 = 4;
+/// The first id of the `turn/steer` requests.
+const STEER: u64 = 100;
 
 /// What a waiting request is, to answer it in its shape.
 enum Kind {
@@ -31,6 +34,14 @@ pub(crate) struct Codex {
     streamed: HashSet<String>,
     /// The message the last text belonged to.
     message: Option<String>,
+    thread: Option<String>,
+    turn: Option<String>,
+    /// The key of each message given with `turn/steer`, by its request id.
+    steering: HashMap<u64, String>,
+    /// How many were given.
+    steered: u64,
+    /// The messages to steer with once the turn has an id: key and text.
+    held: Vec<(String, String)>,
 }
 
 impl Codex {
@@ -40,7 +51,26 @@ impl Codex {
             pending: HashMap::new(),
             streamed: HashSet::new(),
             message: None,
+            thread: None,
+            turn: None,
+            steering: HashMap::new(),
+            steered: 0,
+            held: vec![],
         }
+    }
+
+    fn steer_now(&mut self, key: &str, text: &str, w: &mut Vec<Value>) {
+        let (Some(thread), Some(turn)) = (&self.thread, &self.turn) else {
+            return;
+        };
+        let id = STEER + self.steered;
+        self.steered += 1;
+        w.push(request(
+            id,
+            "turn/steer",
+            json!({ "threadId": thread, "expectedTurnId": turn, "input": input(text) }),
+        ));
+        self.steering.insert(id, key.into());
     }
 
     /// The approval policy, sandbox and model, as thread parameters.
@@ -60,6 +90,11 @@ impl Codex {
         }
         m
     }
+}
+
+/// A message as the input of a turn.
+fn input(text: &str) -> Value {
+    json!([{ "type": "text", "text": text, "text_elements": [] }])
 }
 
 fn request(id: u64, method: &str, params: Value) -> Value {
@@ -134,6 +169,14 @@ impl Driver for Codex {
         match (v.get("id").cloned(), method.as_deref()) {
             // An answer to us.
             (Some(id), None) => {
+                // A steered message is taken in when its request is answered;
+                // one that is not is told about when the turn ends.
+                if let Some(key) = id.as_u64().and_then(|i| self.steering.remove(&i)) {
+                    if v.get("error").is_none() {
+                        return vec![Event::Steered(key)];
+                    }
+                    return vec![];
+                }
                 if let Some(e) = v.get("error") {
                     let why = str_of(e, &["message"]).unwrap_or("the agent failed");
                     return vec![Event::Error(why.into()), Event::Done];
@@ -159,12 +202,17 @@ impl Driver for Codex {
                         w.push(request(
                             TURN,
                             "turn/start",
-                            json!({
-                                "threadId": tid,
-                                "input": [{ "type": "text", "text": self.start.prompt, "text_elements": [] }],
-                            }),
+                            json!({ "threadId": tid, "input": input(&self.start.prompt) }),
                         ));
+                        self.thread = Some(tid.into());
                         vec![Event::Session(tid.into())]
+                    }
+                    Some(TURN) => {
+                        self.turn = str_of(&v, &["result", "turn", "id"]).map(Into::into);
+                        for (key, text) in std::mem::take(&mut self.held) {
+                            self.steer_now(&key, &text, w);
+                        }
+                        vec![]
                     }
                     _ => vec![],
                 }
@@ -321,6 +369,15 @@ impl Driver for Codex {
         };
         w.push(json!({ "id": id, "result": result }));
     }
+
+    fn steer(&mut self, key: &str, text: &str, w: &mut Vec<Value>) -> bool {
+        if self.turn.is_some() {
+            self.steer_now(key, text, w);
+        } else {
+            self.held.push((key.into(), text.into()));
+        }
+        true
+    }
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -466,6 +523,37 @@ mod tests {
         let mut w = vec![];
         d.answer("7", Answer::allow(), &mut w);
         assert_eq!(w[0], json!({ "id": 7, "result": { "decision": "accept" } }));
+    }
+
+    #[test]
+    fn steering() {
+        let mut d = Codex::new(test_start(None));
+        let mut w = vec![];
+        d.start(&mut w);
+        feed(&mut d, &[r#"{"id":1,"result":{}}"#]);
+        feed(&mut d, &[r#"{"id":2,"result":{"thread":{"id":"t1"}}}"#]);
+        // Before the turn has an id, it waits.
+        let mut w = vec![];
+        assert!(d.steer("q1", "also this", &mut w));
+        assert!(w.is_empty());
+        let (_, w) = feed(
+            &mut d,
+            &[r#"{"id":3,"result":{"turn":{"id":"u1","status":"inProgress"}}}"#],
+        );
+        assert_eq!(w[0]["method"], "turn/steer");
+        assert_eq!(w[0]["params"]["expectedTurnId"], "u1");
+        assert_eq!(w[0]["params"]["input"][0]["text"], "also this");
+        let mut w2 = vec![];
+        d.steer("q2", "and this", &mut w2);
+        let (events, _) = feed(
+            &mut d,
+            &[
+                &json!({ "id": w[0]["id"], "result": { "turnId": "u1" } }).to_string(),
+                &json!({ "id": w2[0]["id"], "error": { "message": "no active turn" } }).to_string(),
+            ],
+        );
+        // A refused one is not an error of the turn.
+        assert_eq!(events, vec![Event::Steered("q1".into())]);
     }
 
     #[test]

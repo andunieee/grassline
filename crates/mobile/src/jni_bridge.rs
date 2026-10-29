@@ -122,6 +122,8 @@ simple! {
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
     Java_net_grassline_app_RustBridge_stop(id) => |c, id| c.stop(&id);
     Java_net_grassline_app_RustBridge_send(id, text) => |c, id, text| c.send_text(&id, &text);
+    Java_net_grassline_app_RustBridge_sendNow(id, queued) => |c, id, queued| c.send_now(&id, &queued);
+    Java_net_grassline_app_RustBridge_unqueue(id, queued) => |c, id, queued| c.unqueue(&id, &queued);
     Java_net_grassline_app_RustBridge_decide(id, request, decision) => |c, id, request, decision| {
         if let Err(e) = c.decide(&id, &request, &decision) {
             log::warn!("bad decision: {e}");

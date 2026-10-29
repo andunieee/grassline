@@ -3,7 +3,7 @@
 use crate::config::Config;
 use grassline_agents::{Answer, Event, Provider, Turn};
 use grassline_proto::{
-    Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Role,
+    Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Queued, Role,
     SessionInfo, ToolCall, ToolStatus,
 };
 
@@ -51,7 +51,12 @@ struct Session {
 /// What a controller asks of a running turn.
 enum Control {
     Stop,
-    Decide { request: String, decision: Decision },
+    Decide {
+        request: String,
+        decision: Decision,
+    },
+    /// Sends the queued message with this id now.
+    SendNow(String),
 }
 
 pub struct Core {
@@ -105,6 +110,9 @@ impl Core {
                     Ok(mut s) => {
                         s.info.running = false;
                         s.info.waiting = false;
+                        for q in &mut s.info.queue {
+                            q.steering = false;
+                        }
                         settle_tools(&mut s.messages);
                         sessions.insert(s.info.id.clone(), s);
                     }
@@ -248,6 +256,7 @@ impl Core {
             .map(|p| Agent {
                 name: p.name().into(),
                 installed: p.detect(&cfg.options(p)).is_some(),
+                steers: p.steers(),
             })
             .collect()
     }
@@ -348,16 +357,15 @@ impl Core {
     }
 
     /// Changes what is known of a session, saves it and tells the watchers.
-    fn edit_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Result<(), String> {
-        let info = {
+    fn edit_info<R>(&self, id: &str, f: impl FnOnce(&mut SessionInfo) -> R) -> Result<R, String> {
+        let (r, info) = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id).ok_or("no such session")?;
-            f(&mut s.info);
-            s.info.clone()
+            (f(&mut s.info), s.info.clone())
         };
         self.save(id);
         let _ = self.updates.send(Update::Session(info));
-        Ok(())
+        Ok(r)
     }
 
     // ---- sessions
@@ -412,6 +420,7 @@ impl Core {
             waiting: false,
             model: cfg.models.get(provider.name()).cloned().unwrap_or_default(),
             permissions: cfg.permissions,
+            queue: vec![],
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
@@ -570,29 +579,92 @@ impl Core {
         let _ = self.updates.send(Update::Session(info));
     }
 
-    /// Runs one turn of the session's agent with `text`. Returns once the
-    /// turn has started; its progress arrives as updates.
+    /// Sends a message to the session's agent: it starts a turn, or waits in
+    /// the queue while one runs. Returns once the turn has started; its
+    /// progress arrives as updates.
     pub fn send(self: &Arc<Self>, id: &str, text: &str) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() {
             return Err("empty message".into());
         }
-        let (provider, path, resume, model, permissions) = {
+        let running = self.edit_info(id, |i| {
+            i.queue.push(Queued {
+                id: random_hex(4),
+                text: text.into(),
+                steering: false,
+            });
+            i.running
+        })?;
+        if running {
+            return Ok(());
+        }
+        self.flush(id, None)
+    }
+
+    /// Sends a queued message now: into the running turn when its agent
+    /// steers, otherwise in the next turn, ahead of the rest of the queue.
+    pub fn send_now(self: &Arc<Self>, id: &str, queued: &str) -> Result<(), String> {
+        let running = {
+            let map = self.sessions.lock().unwrap();
+            let s = map.get(id).ok_or("no such session")?;
+            if !s.info.queue.iter().any(|q| q.id == queued) {
+                return Ok(());
+            }
+            s.info.running
+        };
+        if running {
+            self.control(id, Control::SendNow(queued.into()));
+            return Ok(());
+        }
+        self.flush(id, Some(queued))
+    }
+
+    /// Takes a message out of the queue, unless the agent has it already.
+    pub fn unqueue(&self, id: &str, queued: &str) -> Result<(), String> {
+        self.edit_info(id, |i| {
+            if i.queue.iter().any(|q| q.id == queued && q.steering) {
+                return Err("the agent has it already".to_string());
+            }
+            i.queue.retain(|q| q.id != queued);
+            Ok(())
+        })?
+    }
+
+    /// Runs one turn of the session's agent with a queued message: `first`,
+    /// or the oldest. Returns once the turn has started.
+    fn flush(self: &Arc<Self>, id: &str, first: Option<&str>) -> Result<(), String> {
+        let (provider, path, resume, model, permissions, queued, prompt) = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id).ok_or("no such session")?;
             if s.info.running {
                 return Err("the agent is still working".into());
             }
+            if s.info.queue.is_empty() {
+                return Ok(());
+            }
+            let at = s
+                .info
+                .queue
+                .iter()
+                .position(|q| Some(q.id.as_str()) == first)
+                .unwrap_or(0);
             s.info.running = true;
+            let queued = s.info.queue.remove(at);
+            let prompt = queued.text.clone();
             (
                 s.info.provider.clone(),
                 s.info.path.clone(),
                 s.provider_session.clone(),
                 s.info.model.clone(),
                 s.info.permissions,
+                queued,
+                prompt,
             )
         };
-        let provider = Provider::from_name(&provider).ok_or("unknown agent")?;
+        let Some(provider) = Provider::from_name(&provider) else {
+            self.requeue(id, queued);
+            return Err("unknown agent".into());
+        };
         let opts = grassline_agents::Options {
             model,
             permissions: match permissions {
@@ -602,29 +674,47 @@ impl Core {
             },
             ..self.config().options(provider)
         };
-        let turn = Turn::start(provider, &opts, Path::new(&path), text, resume.as_deref());
-        let turn = match turn {
+        let turn = match Turn::start(
+            provider,
+            &opts,
+            Path::new(&path),
+            &prompt,
+            resume.as_deref(),
+        ) {
             Ok(t) => t,
             Err(e) => {
-                self.set_running(id, false);
+                self.requeue(id, queued);
                 return Err(format!("could not start {}: {e}", provider.name()));
             }
         };
-        self.push(id, Role::User, text.into(), false);
+        self.push(id, Role::User, queued.text, false);
         let (tx, rx) = mpsc::unbounded_channel();
         self.turns.lock().unwrap().insert(id.into(), tx);
-        tokio::spawn(self.clone().run(id.to_string(), turn, rx));
+        tokio::spawn(self.clone().run(id.to_string(), provider, turn, rx));
         Ok(())
+    }
+
+    /// Puts back the message of a turn that could not start.
+    fn requeue(&self, id: &str, queued: Queued) {
+        let _ = self.edit_info(id, |i| {
+            i.queue.insert(0, queued);
+            i.running = false;
+        });
     }
 
     async fn run(
         self: Arc<Self>,
         id: String,
+        provider: Provider,
         mut turn: Turn,
         mut rx: mpsc::UnboundedReceiver<Control>,
     ) {
         // Text after a tool call starts a new message.
         let mut appending = false;
+        // The user stopped it: the queue waits.
+        let mut stopped = false;
+        // The queued message to send first when the turn is over.
+        let mut first = None;
         // The message index of each tool call, by its id.
         let mut tools = HashMap::<String, usize>::new();
         let mut asks = Asks::new();
@@ -637,9 +727,18 @@ impl Core {
                         Some(Control::Decide { request, decision }) => {
                             self.decided(&id, &mut turn, &mut asks, &request, decision)
                         }
+                        Some(Control::SendNow(q)) if provider.steers() => self.steer(&id, &mut turn, &q),
+                        // It cannot take it while it works: the turn makes way.
+                        Some(Control::SendNow(q)) => {
+                            turn.kill().await;
+                            self.push(&id, Role::Error, "interrupted".into(), false);
+                            first = Some(q);
+                            break;
+                        }
                         Some(Control::Stop) | None => {
                             turn.kill().await;
                             self.push(&id, Role::Error, "stopped".into(), false);
+                            stopped = true;
                             break;
                         }
                     }
@@ -757,6 +856,19 @@ impl Core {
                         });
                         asks.insert(request, (index, name));
                     }
+                    Event::Steered(q) => {
+                        let text = self
+                            .edit_info(&id, |i| {
+                                let at = i.queue.iter().position(|x| x.id == q)?;
+                                Some(i.queue.remove(at).text)
+                            })
+                            .ok()
+                            .flatten();
+                        if let Some(text) = text {
+                            self.push(&id, Role::User, text, false);
+                        }
+                        appending = false;
+                    }
                     Event::AskCancelled(request) => {
                         if let Some((index, ..)) = asks.remove(&request) {
                             self.edit_tool(&id, index, |t| {
@@ -781,8 +893,40 @@ impl Core {
         for index in settled {
             self.edit_tool(&id, index, |_| {});
         }
+        // What the turn did not take in waits again.
+        let queued = self
+            .edit_info(&id, |i| {
+                for q in &mut i.queue {
+                    q.steering = false;
+                }
+                !i.queue.is_empty()
+            })
+            .unwrap_or(false);
         self.set_running(&id, false);
         self.save(&id);
+        if queued && !stopped {
+            if let Err(e) = self.flush(&id, first.as_deref()) {
+                self.push(&id, Role::Error, e, false);
+            }
+        }
+    }
+
+    /// Gives a queued message to the running turn.
+    fn steer(&self, id: &str, turn: &mut Turn, queued: &str) {
+        let text = self.edit_info(id, |i| {
+            let q = i.queue.iter_mut().find(|q| q.id == queued && !q.steering)?;
+            q.steering = true;
+            Some(q.text.clone())
+        });
+        let Ok(Some(text)) = text else { return };
+        if !turn.steer(queued, &text) {
+            // It is ending: the message goes in the next turn.
+            let _ = self.edit_info(id, |i| {
+                for q in i.queue.iter_mut().filter(|q| q.id == queued) {
+                    q.steering = false;
+                }
+            });
+        }
     }
 
     /// Answers the agent with what a controller decided.
@@ -932,4 +1076,138 @@ pub fn expand(p: &str) -> PathBuf {
 
 pub fn set_online(core: &Core, v: bool) {
     core.online.store(v, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for Claude Code's stream-json: each prompt takes a second,
+    /// in which the messages written to it are taken in; it answers with
+    /// what it got.
+    const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
+import json, os, select, sys, time
+def out(v): print(json.dumps(v), flush=True)
+buf = b""
+def lines(timeout):
+    global buf
+    while b"\n" not in buf:
+        r, _, _ = select.select([0], [], [], timeout)
+        if not r: return None
+        b = os.read(0, 65536)
+        if not b: sys.exit(0)
+        buf += b
+    l, buf = buf.split(b"\n", 1)
+    return json.loads(l)
+while True:
+    v = lines(None)
+    if v.get("type") != "user": continue
+    got = [v["message"]["content"]]
+    out({"type": "system", "subtype": "init", "session_id": "s1"})
+    end = time.time() + 1
+    while time.time() < end:
+        w = lines(0.05)
+        if w:
+            out({"type": "user", "isReplay": True, "uuid": w["uuid"], "message": w["message"]})
+            got.append(w["message"]["content"])
+    out({"type": "assistant", "message": {"content": [{"type": "text", "text": " + ".join(got)}]}})
+    out({"type": "result", "is_error": False})
+"#;
+
+    fn core(name: &str) -> (Arc<Core>, String, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("grassline-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        let fake = dir.join("claude");
+        std::fs::write(&fake, FAKE_CLAUDE).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let core = Core::open(dir.join("config.json"), dir.join("data"));
+        core.update_config(|c| {
+            c.project_dirs = vec![dir.join("project").to_string_lossy().into()];
+            c.binaries
+                .insert("claude".into(), fake.to_string_lossy().into());
+        });
+        let id = core
+            .create_session(&dir.join("project").to_string_lossy(), Some("claude"))
+            .unwrap()
+            .id;
+        (core, id, dir)
+    }
+
+    fn info(core: &Core, id: &str) -> SessionInfo {
+        core.sessions().into_iter().find(|s| s.id == id).unwrap()
+    }
+
+    async fn until(what: &str, f: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("timeout waiting for {what}");
+    }
+
+    fn texts(core: &Core, id: &str) -> Vec<(Role, String)> {
+        core.messages(id)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.role, m.text))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn queued_messages_steer_or_wait_for_the_turn() {
+        let (core, id, dir) = core("queue");
+        for text in ["one", "two", "three", "four"] {
+            core.send(&id, text).unwrap();
+        }
+        let queue = info(&core, &id).queue;
+        assert_eq!(queue.len(), 3);
+        core.send_now(&id, &queue[1].id).unwrap();
+        until("the last turn", || {
+            texts(&core, &id).last().map(|m| m.1.as_str()) == Some("four")
+                && !info(&core, &id).running
+        })
+        .await;
+        use Role::*;
+        // The steered one goes in the turn; the rest one turn each.
+        assert_eq!(
+            texts(&core, &id),
+            vec![
+                (User, "one".into()),
+                (User, "three".into()),
+                (Assistant, "one + three".into()),
+                (User, "two".into()),
+                (Assistant, "two".into()),
+                (User, "four".into()),
+                (Assistant, "four".into()),
+            ]
+        );
+        assert!(info(&core, &id).queue.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn stopping_keeps_the_queue() {
+        let (core, id, dir) = core("stop");
+        core.send(&id, "one").unwrap();
+        core.send(&id, "two").unwrap();
+        core.stop(&id);
+        until("the stop", || !info(&core, &id).running).await;
+        let queue = info(&core, &id).queue;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].text, "two");
+        // Sent now, it starts the next turn.
+        core.send_now(&id, &queue[0].id).unwrap();
+        until("the answer", || {
+            texts(&core, &id)
+                .last()
+                .is_some_and(|m| m.0 == Role::Assistant && m.1.ends_with("two"))
+                && !info(&core, &id).running
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -133,6 +133,8 @@ pub struct Agent {
     pub name: String,
     /// Its binary was found on the daemon's machine.
     pub installed: bool,
+    /// It takes queued messages while it works ([`ClientMsg::SendNow`]).
+    pub steers: bool,
 }
 
 /// A model an agent can use.
@@ -172,6 +174,16 @@ pub struct Transcription {
     pub key: String,
 }
 
+/// A message waiting for the agent to finish its turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Queued {
+    pub id: String,
+    pub text: String,
+    /// It was given to the running turn, which has not taken it in yet.
+    #[serde(default)]
+    pub steering: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -191,6 +203,10 @@ pub struct SessionInfo {
     pub model: String,
     #[serde(default)]
     pub permissions: Permissions,
+    /// The messages sent while the agent works, in order; each goes to it
+    /// once it has answered the one before.
+    #[serde(default)]
+    pub queue: Vec<Queued>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,9 +253,22 @@ pub enum ClientMsg {
     Open {
         id: String,
     },
+    /// Sends a message; while the agent works, it is queued.
     Send {
         id: String,
         text: String,
+    },
+    /// Sends a queued message now: into the running turn when the agent
+    /// [steers](Agent::steers), otherwise by stopping the turn and starting
+    /// the next with it.
+    SendNow {
+        id: String,
+        queued: String,
+    },
+    /// Takes a message out of the queue.
+    Unqueue {
+        id: String,
+        queued: String,
     },
     Stop {
         id: String,

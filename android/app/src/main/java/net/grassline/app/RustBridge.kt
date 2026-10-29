@@ -34,7 +34,11 @@ object RustBridge {
     /** Asks for an agent's models; they arrive in [AppState.models]. */
     @JvmStatic external fun models(provider: String)
     @JvmStatic external fun open(id: String)
+    /** Sends a message; while the agent works, it is queued. */
     @JvmStatic external fun send(id: String, text: String)
+    /** Sends a [Queued] message now: into the running turn when the agent [Agent.steers], otherwise by stopping it. */
+    @JvmStatic external fun sendNow(id: String, queued: String)
+    @JvmStatic external fun unqueue(id: String, queued: String)
     @JvmStatic external fun stop(id: String)
 
     /** Answers the [Ask] whose request is [request]; [decision] is a `Decision` as JSON. */

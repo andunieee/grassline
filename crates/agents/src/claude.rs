@@ -1,7 +1,9 @@
 //! Claude Code with `--input-format stream-json --output-format stream-json`:
 //! the prompt and the answers go to stdin, and `--permission-prompt-tool
 //! stdio` makes it ask there (`can_use_tool`) before a tool that needs
-//! permission, and for `AskUserQuestion`.
+//! permission, and for `AskUserQuestion`. Messages written while it works
+//! are taken in between tool calls, or start another turn after its
+//! `result`; `--replay-user-messages` echoes each one when it is taken in.
 
 use crate::{content_text, str_of, tool, Answer, Choice, Driver, Event, Model, Question, Start};
 use serde_json::{json, Value};
@@ -11,6 +13,8 @@ pub(crate) struct Claude {
     prompt: String,
     /// The input of each tool call that waits, by request.
     pending: HashMap<String, Value>,
+    /// The key of each steered message not taken in yet, by its uuid.
+    steered: HashMap<String, String>,
 }
 
 impl Claude {
@@ -18,6 +22,7 @@ impl Claude {
         Claude {
             prompt: s.prompt,
             pending: HashMap::new(),
+            steered: HashMap::new(),
         }
     }
 }
@@ -56,6 +61,11 @@ impl Driver for Claude {
                         )),
                         _ => {}
                     }
+                }
+            }
+            Some("user") if v["isReplay"].as_bool() == Some(true) => {
+                if let Some(key) = str_of(&v, &["uuid"]).and_then(|u| self.steered.remove(u)) {
+                    out.push(Event::Steered(key));
                 }
             }
             Some("user") => {
@@ -102,7 +112,10 @@ impl Driver for Claude {
                         .unwrap_or("the agent failed");
                     out.push(Event::Error(why.into()));
                 }
-                out.push(Event::Done);
+                // It goes on with the messages it has not taken in yet.
+                if self.steered.is_empty() {
+                    out.push(Event::Done);
+                }
             }
             _ => {}
         }
@@ -128,6 +141,36 @@ impl Driver for Claude {
             "response": { "subtype": "success", "request_id": request, "response": response },
         }));
     }
+
+    fn steer(&mut self, key: &str, text: &str, w: &mut Vec<Value>) -> bool {
+        let uuid = uuid();
+        self.steered.insert(uuid.clone(), key.into());
+        w.push(json!({
+            "type": "user",
+            "message": { "role": "user", "content": text },
+            "parent_tool_use_id": null,
+            "session_id": "default",
+            "uuid": uuid,
+        }));
+        true
+    }
+}
+
+/// A random version 4 UUID.
+fn uuid() -> String {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b).expect("system random number generator");
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 fn questions(input: &Value) -> Vec<Question> {
@@ -210,6 +253,25 @@ mod tests {
                 Event::Done,
             ]
         );
+    }
+
+    #[test]
+    fn steered_messages_hold_the_end() {
+        let mut d = Claude::new(test_start(None));
+        let mut w = vec![];
+        assert!(d.steer("q1", "also this", &mut w));
+        let uuid = w[0]["uuid"].as_str().unwrap().to_string();
+        assert_eq!(w[0]["message"]["content"], "also this");
+        // It ended before taking it in: another turn follows.
+        let (events, _) = feed(&mut d, &[r#"{"type":"result","is_error":false}"#]);
+        assert_eq!(events, vec![]);
+        let replay = json!({ "type": "user", "isReplay": true, "uuid": uuid,
+            "message": { "role": "user", "content": "also this" } });
+        let (events, _) = feed(
+            &mut d,
+            &[&replay.to_string(), r#"{"type":"result","is_error":false}"#],
+        );
+        assert_eq!(events, vec![Event::Steered("q1".into()), Event::Done]);
     }
 
     #[test]

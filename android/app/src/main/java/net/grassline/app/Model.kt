@@ -5,14 +5,17 @@ import org.json.JSONObject
 
 data class Project(val name: String, val path: String)
 
-/** An agent the daemon can run; [installed] when its binary was found there. */
-data class Agent(val name: String, val installed: Boolean)
+/** An agent the daemon can run; [installed] when its binary was found there, [steers] when it takes queued messages while it works. */
+data class Agent(val name: String, val installed: Boolean, val steers: Boolean = false)
 
 /** A model an agent can use; an empty [id] is the agent's default. */
 data class AgentModel(val id: String, val name: String, val description: String)
 
 /** An agent's models, once asked for with [RustBridge.models]. */
 data class ModelList(val items: List<AgentModel>, val error: String?, val loading: Boolean)
+
+/** A message waiting for the agent's turn to end; [steering] once the agent was given it but has not taken it in yet. */
+data class Queued(val id: String, val text: String, val steering: Boolean)
 
 data class SessionInfo(
     val id: String,
@@ -27,6 +30,8 @@ data class SessionInfo(
     val model: String = "",
     /** ask, auto or all. */
     val permissions: String = "ask",
+    /** Messages sent while the agent works, in order. */
+    val queue: List<Queued> = emptyList(),
 )
 
 /** The speech-to-text service the daemon set up for voice messages. */
@@ -104,7 +109,7 @@ data class AppState(
                 status = o.getString("state"),
                 reason = o.optString("reason").takeIf { !o.isNull("reason") && it.isNotEmpty() },
                 projects = o.getJSONArray("projects").map { Project(it.getString("name"), it.getString("path")) },
-                agents = o.optJSONArray("agents").map { Agent(it.getString("name"), it.optBoolean("installed")) },
+                agents = o.optJSONArray("agents").map { Agent(it.getString("name"), it.optBoolean("installed"), it.optBoolean("steers")) },
                 defaultAgent = o.optString("default_agent"),
                 models = o.optJSONObject("models")?.let { m ->
                     m.keys().asSequence().associateWith { k ->
@@ -121,6 +126,7 @@ data class AppState(
                         it.getString("id"), it.getString("project"), it.getString("provider"),
                         it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
                         it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
+                        it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
                     )
                 },
                 transcription = o.optJSONObject("transcription")?.let {
