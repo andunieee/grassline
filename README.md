@@ -4,15 +4,19 @@
 
 <h1 align="center">Grassline</h1>
 
-<p align="center">Your coding agents, from anywhere.</p>
+<p align="center">A calm framework for controlling agents from afar.</p>
 
-Grassline runs Claude Code, opencode and Codex on your own computer and lets you talk to them
-from your phone. Start a session in any of your projects, watch the agent work, approve what it
-wants to do, answer its questions, and walk away: it keeps going at home while you're out
-touching grass.
+Grassline runs Claude Code, opencode, Codex and others on your own computer and lets you talk to them from your phone.
 
-The phone reaches your computer directly over [iroh](https://iroh.computer). You don't need a
-server, an account, a port to open or a VPN.
+Grassline has no notifications, no file browser or command line and doesn't try to replicate your desktop workstation in your phone, only a chat interface for when you're on the go.
+
+Voice commands are supported as long as you bring your own API keys.
+
+Communication between phone and computer computer happens over [iroh](https://iroh.computer), so it is encrypted and works and no servers are needed.
+
+You don't have to manually configure each project you already have in Grassline, because projects are just directories, and if you setup a base directory on Grassline all directories under it are automatically assumed to be projects.
+
+The daemon that you run on your computer is pure Rust with no UI, it uses almost no memory and CPU, so you can keep it running always in the background.
 
 <p align="center">
   <img src="screenshots/app-sessions.png" width="24%" alt="Sessions">
@@ -21,33 +25,9 @@ server, an account, a port to open or a VPN.
   <img src="screenshots/app-pair.png" width="24%" alt="Pairing">
 </p>
 
-## What it does
-
-- **Every session in one place.** See all your sessions across projects and agents, newest
-  first. The ones where an agent is waiting for you are marked **needs you**.
-- **You decide what runs.** Before an agent runs a command or edits a file that needs your
-  permission, the app shows exactly what it wants to do. You can **Allow** it, **Always** allow
-  that tool for the rest of the session, or **Deny** it and say why. Each session can also run in
-  **Auto**, where the agent runs what looks safe and asks only for the rest, or **Don't ask**.
-- **Questions with real answers.** When an agent asks you something, its options show up as
-  chips, and you can always write something else.
-- **See every step.** Each file read, search, edit and command shows up as one line. Tap it to
-  see its input and output.
-- **Pick your agent.** Choose Claude Code, opencode or Codex for each new session, change the
-  default, or switch a running conversation to another agent. Pick its model from the list the
-  agent gives, and type to filter it.
-- **Voice messages.** Tap 🎤, talk, and the agent gets the text. Transcription uses the
-  speech-to-text service you choose (OpenAI, OpenRouter, Groq, Mistral or any compatible one).
-  The phone calls it directly, so the audio never passes through your computer.
-- **Pairing with a QR code.** Scan the code shown in the admin dashboard with the app, or with
-  the phone's camera, and you're connected.
-
 ## The admin dashboard
 
-The daemon on your computer is set up from a dashboard you open in a
-[hyperb](https://github.com/andunieee/hyperb) browser. There you can pair phones and see who's
-connected, choose which directories are projects, check which agents are installed, and set up
-voice messages.
+The daemon on your computer is headless, but it can be configured from a dashboard you open in a [hyperb](https://github.com/andunieee/hyperb) browser. There you can pair phones and see who's connected, choose which directories are projects, check which agents are installed, and set up voice messages.
 
 <p align="center">
   <img src="screenshots/admin-agents.png" width="49%" alt="Agents">
