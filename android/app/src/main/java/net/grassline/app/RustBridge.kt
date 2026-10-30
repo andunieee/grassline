@@ -15,8 +15,11 @@ object RustBridge {
     /** Blocks until the state is newer than [seen] or the timeout passes; returns its version. */
     @JvmStatic external fun await(seen: Long, timeoutMs: Long): Long
 
-    /** Pairs with the daemon a ticket names; returns an error message, or null. */
+    /** Pairs with the daemon a ticket names, and goes to it once it lets us in; returns an error message, or null. */
     @JvmStatic external fun pair(ticket: String, deviceName: String): String?
+    /** Goes to another paired daemon, one of [AppState.daemons]. */
+    @JvmStatic external fun switchTo(endpoint: String)
+    /** Forgets the daemon the app is on, and goes to another one if there is. */
     @JvmStatic external fun unpair()
     @JvmStatic external fun refresh()
     /** Creates a session in [project] with [provider], or the default agent when it is empty. */

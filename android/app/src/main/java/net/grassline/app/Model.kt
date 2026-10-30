@@ -5,6 +5,11 @@ import org.json.JSONObject
 
 data class Project(val name: String, val path: String)
 
+/** A daemon this phone is paired with; [name] is empty until it says what it calls itself. */
+data class Daemon(val endpoint: String, val name: String) {
+    val label get() = name.ifEmpty { endpoint.take(8) }
+}
+
 /** An agent the daemon can run; [installed] when its binary was found there, [steers] when it takes queued messages while it works. */
 data class Agent(val name: String, val installed: Boolean, val steers: Boolean = false)
 
@@ -112,6 +117,12 @@ data class AppState(
     val transcription: Transcription? = null,
     val messages: Map<String, List<ChatMessage>> = emptyMap(),
     val error: String? = null,
+    /** The paired daemons. */
+    val daemons: List<Daemon> = emptyList(),
+    /** The [Daemon.endpoint] of the one the app is on. */
+    val daemon: String? = null,
+    /** The connection is a pairing the daemon has not let in yet; once it does, the app is on that daemon. */
+    val pairing: Boolean = false,
 ) {
     companion object {
         fun parse(json: String): AppState {
@@ -144,6 +155,9 @@ data class AppState(
                     }
                 },
                 error = if (o.isNull("error")) null else o.getString("error"),
+                daemons = o.optJSONArray("daemons").map { Daemon(it.getString("endpoint"), it.optString("name")) },
+                daemon = o.optStringOrNull("daemon"),
+                pairing = o.optBoolean("pairing"),
             )
         }
     }

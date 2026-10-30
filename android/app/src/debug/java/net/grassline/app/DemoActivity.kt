@@ -18,11 +18,11 @@ class DemoActivity : ComponentActivity() {
             GrasslineTheme(theme) {
                 Surface(Modifier.fillMaxSize()) {
                     when (screen) {
-                        "pair" -> PairScreen(AppState(status = "unpaired"), null) {}
+                        "pair" -> PairScreen(AppState(status = "unpaired"), null, null) {}
                         "chat" -> ChatScreen(state, state.sessions[0]) {}
                         "questions" -> ChatScreen(state, state.sessions[1]) {}
                         "archive" -> ArchiveScreen(state.copy(archived = state.sessions.drop(2)), {}) {}
-                        else -> SessionsScreen(state, {}, {}, { _, _ -> })
+                        else -> SessionsScreen(state, {}, {}, {}, { _, _ -> })
                     }
                 }
             }
@@ -97,5 +97,7 @@ private fun demoState(): AppState {
         sessions = sessions,
         transcription = Transcription("", "", ""),
         messages = mapOf("s1" to chat, "s2" to questions),
+        daemons = listOf(Daemon("e1", "workstation"), Daemon("e2", "laptop")),
+        daemon = "e1",
     )
 }

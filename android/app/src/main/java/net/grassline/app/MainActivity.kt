@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
@@ -88,18 +89,16 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
         OutdatedScreen(state.reason)
         return
     }
-    if (state.status == "unpaired" || state.status == "refused") {
-        PairScreen(state, link, onLinkUsed)
+    // Pairing another daemon, until the code is sent.
+    var adding by remember { mutableStateOf(false) }
+    LaunchedEffect(link) { if (link != null) adding = true }
+    // Then until the daemon lets us in.
+    LaunchedEffect(state.pairing) { if (state.pairing) adding = false }
+    if (state.status == "unpaired" || state.pairing || adding) {
+        // Back to the daemon the app was on.
+        val back = state.daemon?.let { previous -> { adding = false; if (state.pairing) RustBridge.switchTo(previous) } }
+        PairScreen(state, link, back, onLinkUsed)
         return
-    }
-    if (link != null) {
-        AlertDialog(
-            onDismissRequest = onLinkUsed,
-            title = { Text("Pair with another daemon?") },
-            text = { Text("This pairing code is for a daemon; this phone forgets the one it is paired with.") },
-            confirmButton = { TextButton({ onLinkUsed(); RustBridge.pair(link, deviceName()) }) { Text("Pair") } },
-            dismissButton = { TextButton(onLinkUsed) { Text("Cancel") } },
-        )
     }
     var current by remember { mutableStateOf<String?>(null) }
     // The archive is showing, under the open session if there is one.
@@ -130,6 +129,7 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
             state,
             onOpen = open,
             onArchive = { archive = true },
+            onAddDaemon = { adding = true },
             onCreate = { project, agent ->
                 waitingFor = state.sessions.map { it.id }.toSet()
                 RustBridge.create(project.path, agent)
@@ -139,7 +139,7 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
 }
 
 @Composable
-fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
+fun PairScreen(state: AppState, link: String?, onBack: (() -> Unit)?, onLinkUsed: () -> Unit) {
     var ticket by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var ownScanner by remember { mutableStateOf(false) }
@@ -156,11 +156,22 @@ fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
         }
     }
     val scan = rememberQrScan(onFallback = { ownScanner = true }, onResult = ::pair)
+    if (onBack != null) BackHandler(onBack = onBack)
     if (ownScanner) {
         BackHandler { ownScanner = false }
         QrScannerScreen(onResult = { ownScanner = false; pair(it) }, onCancel = { ownScanner = false })
         return
     }
+    Box(Modifier.fillMaxSize()) {
+        PairForm(state, ticket, error, scan, { ticket = it; error = null }) { pair(ticket) }
+        if (onBack != null) {
+            IconButton(onBack, Modifier.systemBarsPadding().padding(4.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+        }
+    }
+}
+
+@Composable
+private fun PairForm(state: AppState, ticket: String, error: String?, onScan: () -> Unit, onTicket: (String) -> Unit, onPair: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(24.dp).systemBarsPadding(), verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.logo), null, Modifier.size(72.dp))
         Spacer(Modifier.height(16.dp))
@@ -169,16 +180,24 @@ fun PairScreen(state: AppState, link: String?, onLinkUsed: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Text("Open the daemon's admin interface, go to Access, press “New pairing code”, then scan it or paste the code here.")
         Spacer(Modifier.height(16.dp))
-        Button(onClick = scan, Modifier.fillMaxWidth()) { Text("Scan QR code") }
+        Button(onClick = onScan, Modifier.fillMaxWidth()) { Text("Scan QR code") }
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(ticket, { ticket = it; error = null }, Modifier.fillMaxWidth(), label = { Text("Pairing code") }, singleLine = true)
-        val shown = error ?: state.reason?.takeIf { state.status == "refused" }
-        if (shown != null) Text(shown, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+        OutlinedTextField(ticket, onTicket, Modifier.fillMaxWidth(), label = { Text("Pairing code") }, singleLine = true)
+        when {
+            error != null -> Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+            !state.pairing -> {}
+            state.status == "refused" -> Text(state.reason ?: "refused", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+            else -> Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (state.status == "offline") "Can't reach the daemon yet: ${state.reason ?: ""}" else "Connecting…",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+                )
+            }
+        }
         Spacer(Modifier.height(16.dp))
-        OutlinedButton(
-            onClick = { pair(ticket) },
-            enabled = ticket.isNotBlank(),
-        ) { Text("Pair") }
+        OutlinedButton(onClick = onPair, enabled = ticket.isNotBlank()) { Text("Pair") }
     }
 }
 
@@ -206,9 +225,10 @@ fun ErrorLine(state: AppState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onCreate: (Project, String) -> Unit) {
+fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onAddDaemon: () -> Unit, onCreate: (Project, String) -> Unit) {
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var daemonMenu by remember { mutableStateOf(false) }
     var agentMenu by remember { mutableStateOf(false) }
     // The agent the next session gets; the default until another is picked.
     var agent by remember(picking, state.defaultAgent) { mutableStateOf(state.defaultAgent) }
@@ -217,14 +237,39 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("Sessions")
-                        if (state.status != "connected") {
-                            Text(
-                                if (state.status == "offline") "offline: ${state.reason ?: ""}" else "connecting…",
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                    // The daemon the app is on; tapping it switches to another or pairs a new one.
+                    Box {
+                        Column(Modifier.clickable { daemonMenu = true }) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(state.daemons.firstOrNull { it.endpoint == state.daemon }?.label ?: "Sessions", Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                DropArrow()
+                            }
+                            if (state.status != "connected") {
+                                Text(
+                                    when (state.status) {
+                                        "offline" -> "offline: ${state.reason ?: ""}"
+                                        "refused" -> "refused: ${state.reason ?: ""}"
+                                        else -> "connecting…"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        DropdownMenu(daemonMenu, { daemonMenu = false }) {
+                            for (d in state.daemons) {
+                                DropdownMenuItem(
+                                    text = { Text(d.label) },
+                                    leadingIcon = { Tick(d.endpoint == state.daemon) },
+                                    onClick = { daemonMenu = false; if (d.endpoint != state.daemon) RustBridge.switchTo(d.endpoint) },
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Pair a new daemon") },
+                                leadingIcon = { Icon(Icons.Filled.Add, null) },
+                                onClick = { daemonMenu = false; onAddDaemon() },
                             )
                         }
                     }
@@ -243,7 +288,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem(text = { Text("Archive") }, onClick = { menu = false; onArchive() })
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
-                        DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; RustBridge.unpair() })
+                        DropdownMenuItem(text = { Text("Unpair this daemon") }, onClick = { menu = false; RustBridge.unpair() })
                         HorizontalDivider()
                         for (m in ThemeMode.entries) {
                             DropdownMenuItem(
@@ -262,7 +307,11 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             ErrorLine(state)
-            if (state.sessions.isEmpty()) {
+            if (state.status == "refused") {
+                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Text("The daemon does not let this phone in: ${state.reason ?: "refused"}. Pair it again from the menu at the top left.")
+                }
+            } else if (state.sessions.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No sessions yet.")
                 }

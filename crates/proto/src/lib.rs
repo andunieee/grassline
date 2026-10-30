@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -308,6 +308,9 @@ pub enum ServerMsg {
     Hello {
         ok: bool,
         error: Option<String>,
+        /// What the daemon calls itself (its host's name), for the app to tell
+        /// daemons apart.
+        name: String,
     },
     Projects {
         items: Vec<Project>,
