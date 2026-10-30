@@ -43,3 +43,21 @@ just android           # build the app and install it on connected phones
 
 Open `hyperb://127.0.0.1:7878/`, go to **Access**, press **New pairing code**, and scan it with the
 app. Then add your projects under **Projects** and start a session from the phone.
+
+## Releases
+
+Pushing a tag builds and publishes everything:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow builds `grasslined` for Linux (x86_64 and aarch64) and macOS (Apple
+Silicon and Intel), packages each with the systemd unit and this README, and builds the
+release APK. All of it is attached to the GitHub release for the tag.
+
+The APK is signed with the debug key unless these repository secrets are set:
+`ANDROID_KEYSTORE_BASE64` (the base64 of a `.jks` file), `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. Builds signed with different keys cannot
+be installed over each other, so keep the same keystore for every release.

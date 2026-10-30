@@ -4,6 +4,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Set by the release workflow. Without a keystore the release build is signed
+// with the debug key, so it can still be installed (but not updated over a
+// build signed with another key).
+val releaseKeystore = System.getenv("GRASSLINE_KEYSTORE")?.takeIf { it.isNotBlank() }
+val versionCodeFromEnv = System.getenv("GRASSLINE_VERSION_CODE")?.toIntOrNull() ?: 1
+val versionNameFromEnv = System.getenv("GRASSLINE_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
+
 android {
     namespace = "net.grassline.app"
     compileSdk = 35
@@ -12,17 +19,33 @@ android {
         applicationId = "net.grassline.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = versionCodeFromEnv
+        versionName = versionNameFromEnv
         ndk {
             // Rust core built via: just android-libs
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("GRASSLINE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("GRASSLINE_KEY_ALIAS")
+                keyPassword = System.getenv("GRASSLINE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {

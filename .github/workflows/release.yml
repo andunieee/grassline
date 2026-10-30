@@ -1,0 +1,182 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  daemon:
+    name: daemon (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            cross: true
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build grasslined
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross build --release --locked -p grassline-daemon --target "${{ matrix.target }}"
+          else
+            cargo build --release --locked -p grassline-daemon --target "${{ matrix.target }}"
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="grasslined-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/grasslined" "dist/$name/"
+          cp deploy/grasslined.service "dist/$name/"
+          cp README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemon-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    name: android apk
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit count is the version code, so it must keep increasing.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      - uses: taiki-e/install-action@cargo-ndk
+
+      - name: Find the NDK
+        shell: bash
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          if [[ -z "$ndk" ]]; then
+            sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+            ndk="$(ls -d "$sdk"/ndk/* 2>/dev/null | sort -V | tail -n1)"
+          fi
+          if [[ -z "$ndk" ]]; then
+            echo "no Android NDK found" >&2
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "using NDK $ndk"
+
+      - name: Build the Rust libraries
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a \
+            -o android/app/src/main/jniLibs \
+            build --release --locked -p grassline-mobile
+
+      - name: Set up signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo "No ANDROID_KEYSTORE_BASE64 secret: the APK will be signed with the debug key."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          {
+            echo "GRASSLINE_KEYSTORE=$RUNNER_TEMP/release.keystore"
+            echo "GRASSLINE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "GRASSLINE_KEY_ALIAS=$KEY_ALIAS"
+            echo "GRASSLINE_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Set the version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "GRASSLINE_VERSION_NAME=$version" >> "$GITHUB_ENV"
+          echo "GRASSLINE_VERSION_CODE=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        run: ./android/gradlew -p android --no-daemon assembleRelease
+
+      - name: Collect the APK
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          apk="$(find android/app/build/outputs/apk/release -name '*.apk' | head -n1)"
+          if [[ -z "$apk" ]]; then
+            echo "no release APK was built" >&2
+            exit 1
+          fi
+          cp "$apk" "dist/grassline-${version}.apk"
+          (cd dist && sha256sum "grassline-${version}.apk" > "grassline-${version}.apk.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish
+    needs: [daemon, android]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
