@@ -728,6 +728,11 @@ impl App for Admin {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 core.update_config(|c| c.admin_iroh = on);
+                if on {
+                    if let Some(id) = core.endpoint_id.get() {
+                        println!("admin interface on hyperb://{id}/ (over iroh)");
+                    }
+                }
             }
             "add_key" => {
                 let key = sig(a, "new_key").to_lowercase();

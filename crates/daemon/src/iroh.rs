@@ -24,8 +24,12 @@ pub async fn serve(core: Arc<Core>, identity: Identity) {
         Ok(e) => e,
         Err(e) => return eprintln!("no iroh: {e}"),
     };
-    let _ = core.endpoint_id.set(endpoint.id().to_string());
-    println!("iroh endpoint {}", endpoint.id());
+    let id = endpoint.id().to_string();
+    let _ = core.endpoint_id.set(id.clone());
+    println!("iroh endpoint {id}");
+    if core.config().admin_iroh {
+        println!("admin interface on hyperb://{id}/ (over iroh)");
+    }
     {
         let core = core.clone();
         let endpoint = endpoint.clone();

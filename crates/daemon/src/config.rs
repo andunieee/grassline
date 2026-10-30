@@ -128,7 +128,8 @@ impl Default for Config {
                 enabled: true,
                 addr: "127.0.0.1:7878".into(),
             },
-            admin_iroh: false,
+            // On, but only the keys in `admin_keys` get in.
+            admin_iroh: true,
             admin_keys: vec![],
             paired: vec![],
             transcription: Transcription::default(),
