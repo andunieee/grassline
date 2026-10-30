@@ -316,8 +316,9 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     var pickingModel by remember { mutableStateOf(false) }
     var permissionsMenu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
-    LaunchedEffect(messages.size, messages.lastOrNull()) {
-        if (messages.isNotEmpty()) list.animateScrollToItem(messages.size - 1)
+    // The list is laid out bottom-up, so it opens on the newest message and stays there as it grows.
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) list.animateScrollToItem(0)
     }
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -405,9 +406,9 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             }
         },
     ) { pad ->
-        LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(messages.size) { Bubble(session.id, messages[it]) }
+        LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, reverseLayout = true, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (session.running && !session.waiting) item { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+            items(messages.size, key = { messages.size - 1 - it }) { Bubble(session.id, messages[messages.size - 1 - it]) }
         }
     }
 
