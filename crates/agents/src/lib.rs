@@ -213,7 +213,7 @@ impl Provider {
                 }
             }
             Provider::Opencode => {
-                c.arg("acp").arg("--cwd").arg(cwd);
+                c.arg("acp");
                 // opencode allows everything unless configured otherwise.
                 let (edit, rest) = match opts.permissions {
                     Permissions::Ask => ("ask", "ask"),
