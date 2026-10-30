@@ -69,9 +69,7 @@ pub async fn serve(
     write(&mut send, &transcription(&core)).await?;
     write(
         &mut send,
-        &ServerMsg::Sessions {
-            items: core.sessions(),
-        },
+        &sessions(&core),
     )
     .await?;
     if let Some(m) = pending {
@@ -91,7 +89,7 @@ pub async fn serve(
                 Ok(Update::Session(info)) => write(&mut send, &ServerMsg::Session { info }).await?,
                 Ok(Update::Removed(id)) => {
                     opened.remove(&id);
-                    write(&mut send, &ServerMsg::Sessions { items: core.sessions() }).await?;
+                    write(&mut send, &sessions(&core)).await?;
                 }
                 Ok(Update::Msg { id, index, message }) => {
                     if opened.contains(&id) {
@@ -100,7 +98,7 @@ pub async fn serve(
                 }
                 // Missed some: start over.
                 Err(RecvError::Lagged(_)) => {
-                    write(&mut send, &ServerMsg::Sessions { items: core.sessions() }).await?;
+                    write(&mut send, &sessions(&core)).await?;
                     for id in &opened {
                         let messages = core.messages(id).unwrap_or_default();
                         write(&mut send, &ServerMsg::History { id: id.clone(), messages }).await?;
@@ -145,9 +143,7 @@ async fn handle(
             write(send, &transcription(core)).await?;
             write(
                 send,
-                &ServerMsg::Sessions {
-                    items: core.sessions(),
-                },
+                &sessions(core),
             )
             .await?;
         }
@@ -203,6 +199,15 @@ async fn handle(
                 Err(e) => write(send, &err(e)).await?,
             }
         }
+        ClientMsg::Archive { id, archived } => {
+            if let Err(e) = core.set_archived(&id, archived) {
+                write(send, &err(e)).await?;
+            }
+        }
+        ClientMsg::Archived => {
+            let items = core.sessions().into_iter().filter(|s| s.archived).collect();
+            write(send, &ServerMsg::Archived { items }).await?;
+        }
         ClientMsg::Open { id } => match core.messages(&id) {
             Some(messages) => {
                 opened.insert(id.clone());
@@ -210,6 +215,10 @@ async fn handle(
             }
             None => write(send, &err("no such session".into())).await?,
         },
+        ClientMsg::Close { id } => {
+            opened.remove(&id);
+            core.delete_if_unused(&id);
+        }
         ClientMsg::Send { id, text } => {
             if let Err(e) = core.send(&id, &text) {
                 write(send, &err(e)).await?;
@@ -233,6 +242,13 @@ async fn handle(
         } => core.decide(&id, &request, decision),
     }
     Ok(())
+}
+
+/// The sessions that are not archived.
+fn sessions(core: &Core) -> ServerMsg {
+    ServerMsg::Sessions {
+        items: core.sessions().into_iter().filter(|s| !s.archived).collect(),
+    }
 }
 
 fn agents(core: &Core) -> ServerMsg {

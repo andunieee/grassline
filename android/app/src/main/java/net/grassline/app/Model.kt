@@ -64,6 +64,14 @@ private fun <T> JSONArray?.map(f: (JSONObject) -> T): List<T> =
 
 private fun JSONObject.optStringOrNull(k: String): String? = if (isNull(k)) null else optString(k)
 
+private fun parseSession(it: JSONObject) = SessionInfo(
+    it.getString("id"), it.getString("project"), it.getString("provider"),
+    it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
+    it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
+    it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
+    it.optString("preview"),
+)
+
 private fun parseTool(t: JSONObject) = ToolCall(
     id = t.optString("id"),
     name = t.optString("name"),
@@ -96,8 +104,10 @@ data class AppState(
     val defaultAgent: String = "",
     /** By agent; only the ones asked for. */
     val models: Map<String, ModelList> = emptyMap(),
-    /** Most recent first. */
+    /** Most recent first; not the archived ones. */
     val sessions: List<SessionInfo> = emptyList(),
+    /** The archived sessions, most recent first; null until asked for with [RustBridge.archived]. */
+    val archived: List<SessionInfo>? = null,
     /** Null when voice messages are not set up. */
     val transcription: Transcription? = null,
     val messages: Map<String, List<ChatMessage>> = emptyMap(),
@@ -123,15 +133,8 @@ data class AppState(
                         )
                     }
                 } ?: emptyMap(),
-                sessions = o.getJSONArray("sessions").map {
-                    SessionInfo(
-                        it.getString("id"), it.getString("project"), it.getString("provider"),
-                        it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
-                        it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
-                        it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
-                        it.optString("preview"),
-                    )
-                },
+                sessions = o.getJSONArray("sessions").map(::parseSession),
+                archived = o.optJSONArray("archived")?.map(::parseSession),
                 transcription = o.optJSONObject("transcription")?.let {
                     Transcription(it.getString("url"), it.getString("model"), it.getString("key"))
                 },

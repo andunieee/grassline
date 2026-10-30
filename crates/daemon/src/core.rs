@@ -365,6 +365,10 @@ impl Core {
         self.edit_info(id, |i| i.permissions = permissions)
     }
 
+    pub fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
+        self.edit_info(id, |i| i.archived = archived)
+    }
+
     /// Changes what is known of a session, saves it and tells the watchers.
     fn edit_info<R>(&self, id: &str, f: impl FnOnce(&mut SessionInfo) -> R) -> Result<R, String> {
         let (r, info) = {
@@ -431,6 +435,7 @@ impl Core {
             model: cfg.models.get(provider.name()).cloned().unwrap_or_default(),
             permissions: cfg.permissions,
             queue: vec![],
+            archived: false,
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
@@ -451,6 +456,16 @@ impl Core {
         self.sessions.lock().unwrap().remove(id);
         let _ = std::fs::remove_file(self.data_dir.join("sessions").join(format!("{id}.json")));
         let _ = self.updates.send(Update::Removed(id.into()));
+    }
+
+    /// Deletes session `id` when nothing was ever sent to it.
+    pub fn delete_if_unused(&self, id: &str) {
+        let unused = self.sessions.lock().unwrap().get(id).is_some_and(|s| {
+            s.messages.is_empty() && s.info.queue.is_empty() && !s.info.running
+        });
+        if unused {
+            self.delete_session(id);
+        }
     }
 
     pub fn stop(&self, id: &str) {
@@ -594,6 +609,7 @@ impl Core {
             return Err("empty message".into());
         }
         let running = self.edit_info(id, |i| {
+            i.archived = false;
             i.queue.push(Queued {
                 id: random_hex(4),
                 text: text.into(),
@@ -1245,6 +1261,33 @@ while True:
             ]
         );
         assert!(info(&core, &id).queue.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn only_unused_sessions_are_deleted_on_close() {
+        let (core, unused, dir) = core("unused");
+        let used = core
+            .create_session(&dir.join("project").to_string_lossy(), Some("claude"))
+            .unwrap()
+            .id;
+        core.send(&used, "one").unwrap();
+        until("the answer", || !info(&core, &used).running).await;
+        core.delete_if_unused(&unused);
+        core.delete_if_unused(&used);
+        let ids: Vec<_> = core.sessions().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, [used]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sending_takes_a_session_out_of_the_archive() {
+        let (core, id, dir) = core("archive");
+        core.set_archived(&id, true).unwrap();
+        assert!(info(&core, &id).archived);
+        core.send(&id, "one").unwrap();
+        assert!(!info(&core, &id).archived);
+        until("the answer", || !info(&core, &id).running).await;
         let _ = std::fs::remove_dir_all(dir);
     }
 

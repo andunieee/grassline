@@ -4,7 +4,7 @@
 use crate::Controller;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::objects::{JClass, JString};
-use jni::sys::{jlong, jstring};
+use jni::sys::{jboolean, jlong, jstring};
 use jni::EnvUnowned;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -120,6 +120,7 @@ simple! {
     };
     Java_net_grassline_app_RustBridge_models(provider) => |c, provider| c.models(&provider);
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
+    Java_net_grassline_app_RustBridge_close(id) => |c, id| c.close(&id);
     Java_net_grassline_app_RustBridge_stop(id) => |c, id| c.stop(&id);
     Java_net_grassline_app_RustBridge_send(id, text) => |c, id, text| c.send_text(&id, &text);
     Java_net_grassline_app_RustBridge_sendNow(id, queued) => |c, id, queued| c.send_now(&id, &queued);
@@ -129,6 +130,31 @@ simple! {
             log::warn!("bad decision: {e}");
         }
     };
+}
+
+/// `archive(id: String, archived: Boolean)`.
+#[no_mangle]
+pub extern "system" fn Java_net_grassline_app_RustBridge_archive(
+    mut env: EnvUnowned<'_>,
+    _class: JClass,
+    id: JString,
+    archived: jboolean,
+) {
+    env.with_env(|env| -> jni::errors::Result<()> {
+        let id = id.try_to_string(env)?;
+        controller().archive(&id, archived);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `archived()`.
+#[no_mangle]
+pub extern "system" fn Java_net_grassline_app_RustBridge_archived(
+    _env: EnvUnowned<'_>,
+    _class: JClass,
+) {
+    controller().archived();
 }
 
 /// `refresh()`.

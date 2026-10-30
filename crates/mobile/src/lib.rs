@@ -43,6 +43,8 @@ struct State {
     /// The agent new sessions use by default.
     default_agent: String,
     sessions: Vec<SessionInfo>,
+    /// The archived sessions, once asked for.
+    archived: Option<Vec<SessionInfo>>,
     /// Where voice messages are turned into text, if the daemon set it up.
     transcription: Option<Transcription>,
     /// The models of the agents they were asked for, by provider name.
@@ -246,9 +248,29 @@ impl Controller {
         });
     }
 
+    /// Puts a session in the archive, or takes it out.
+    pub fn archive(&self, id: &str, archived: bool) {
+        self.send(ClientMsg::Archive {
+            id: id.into(),
+            archived,
+        });
+    }
+
+    /// Asks the daemon for the archived sessions; they show up in the
+    /// snapshot.
+    pub fn archived(&self) {
+        self.send(ClientMsg::Archived);
+    }
+
     pub fn open(&self, id: &str) {
         self.shared.opened.lock().unwrap().insert(id.into());
         self.send(ClientMsg::Open { id: id.into() });
+    }
+
+    /// Leaves a session; the daemon deletes it when nothing was sent to it.
+    pub fn close(&self, id: &str) {
+        self.shared.opened.lock().unwrap().remove(id);
+        self.send(ClientMsg::Close { id: id.into() });
     }
 
     pub fn send_text(&self, id: &str, text: &str) {
@@ -296,7 +318,8 @@ impl Controller {
     /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
     /// whether each is installed and `steers`), `default_agent`, `models` (by
     /// agent: `items`, `error` and `loading`), `sessions` (most recent first,
-    /// each with its `model`, `permissions` and `queue`), `transcription` (`url`, `model` and `key` of the
+    /// each with its `model`, `permissions` and `queue`), `archived` (the
+    /// same, or null until asked for), `transcription` (`url`, `model` and `key` of the
     /// speech-to-text service, or null), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error` and `key`.
     pub fn snapshot(&self) -> String {
@@ -308,6 +331,7 @@ impl Controller {
         o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("models".into(), json!(s.models));
         o.insert("sessions".into(), json!(s.sessions));
+        o.insert("archived".into(), json!(s.archived));
         o.insert("transcription".into(), json!(s.transcription));
         o.insert("messages".into(), json!(s.messages));
         o.insert("error".into(), json!(s.error));
@@ -495,11 +519,23 @@ fn apply(shared: &Shared, msg: ServerMsg) {
         }
         ServerMsg::Transcription { config } => s.transcription = config,
         ServerMsg::Sessions { items } => s.sessions = items,
+        ServerMsg::Archived { items } => s.archived = Some(items),
         ServerMsg::Session { info } => {
             s.sessions.retain(|i| i.id != info.id);
-            s.sessions.push(info);
-            s.sessions
-                .sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
+            if let Some(a) = &mut s.archived {
+                a.retain(|i| i.id != info.id);
+            }
+            // It goes in the list it now belongs to, unless that is the
+            // archive and it was not asked for.
+            let list = if info.archived {
+                s.archived.as_mut()
+            } else {
+                Some(&mut s.sessions)
+            };
+            if let Some(list) = list {
+                list.push(info);
+                list.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
+            }
         }
         ServerMsg::History { id, messages } => {
             s.messages.insert(id, messages);

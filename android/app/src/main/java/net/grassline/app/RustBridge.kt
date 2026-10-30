@@ -33,7 +33,13 @@ object RustBridge {
 
     /** Asks for an agent's models; they arrive in [AppState.models]. */
     @JvmStatic external fun models(provider: String)
+    /** Puts a session in the archive, or takes it out. */
+    @JvmStatic external fun archive(id: String, archived: Boolean)
+    /** Asks for the archived sessions; they arrive in [AppState.archived]. */
+    @JvmStatic external fun archived()
     @JvmStatic external fun open(id: String)
+    /** Leaves a session; the daemon deletes it when nothing was sent to it. */
+    @JvmStatic external fun close(id: String)
     /** Sends a message; while the agent works, it is queued. */
     @JvmStatic external fun send(id: String, text: String)
     /** Sends a [Queued] message now: into the running turn when the agent [Agent.steers], otherwise by stopping it. */

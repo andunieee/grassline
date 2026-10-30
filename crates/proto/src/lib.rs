@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -210,6 +210,10 @@ pub struct SessionInfo {
     /// once it has answered the one before.
     #[serde(default)]
     pub queue: Vec<Queued>,
+    /// It was put away: it is left out of [`ServerMsg::Sessions`] and listed
+    /// in [`ServerMsg::Archived`] instead.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,8 +256,21 @@ pub enum ClientMsg {
     Models {
         provider: String,
     },
+    /// Puts session `id` in the archive, or takes it out. Sending it a
+    /// message takes it out too.
+    Archive {
+        id: String,
+        archived: bool,
+    },
+    /// Asks for the archived sessions; answered with [`ServerMsg::Archived`].
+    Archived,
     /// Starts receiving the messages of a session.
     Open {
+        id: String,
+    },
+    /// Stops receiving the messages of a session; it is deleted when
+    /// nothing was sent to it.
+    Close {
         id: String,
     },
     /// Sends a message; while the agent works, it is queued.
@@ -310,11 +327,16 @@ pub enum ServerMsg {
     Transcription {
         config: Option<Transcription>,
     },
-    /// Every session, most recently updated first.
+    /// Every session but the archived ones, most recently updated first.
     Sessions {
         items: Vec<SessionInfo>,
     },
-    /// One session changed or was created.
+    /// The archived sessions, most recently updated first.
+    Archived {
+        items: Vec<SessionInfo>,
+    },
+    /// One session changed or was created; it may have gone in or out of the
+    /// archive.
     Session {
         info: SessionInfo,
     },

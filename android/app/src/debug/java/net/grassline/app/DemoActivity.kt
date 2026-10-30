@@ -21,7 +21,8 @@ class DemoActivity : ComponentActivity() {
                         "pair" -> PairScreen(AppState(status = "unpaired"), null) {}
                         "chat" -> ChatScreen(state, state.sessions[0]) {}
                         "questions" -> ChatScreen(state, state.sessions[1]) {}
-                        else -> SessionsScreen(state, {}, { _, _ -> })
+                        "archive" -> ArchiveScreen(state.copy(archived = state.sessions.drop(2)), {}) {}
+                        else -> SessionsScreen(state, {}, {}, { _, _ -> })
                     }
                 }
             }

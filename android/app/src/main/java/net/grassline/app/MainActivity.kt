@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -100,6 +102,8 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
         )
     }
     var current by remember { mutableStateOf<String?>(null) }
+    // The archive is showing, under the open session if there is one.
+    var archive by remember { mutableStateOf(false) }
     // A session we just asked for opens once the daemon announces it.
     var waitingFor by remember { mutableStateOf<Set<String>?>(null) }
     // Unless the daemon could not start it.
@@ -112,14 +116,20 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
             current = it.id
         }
     }
-    val session = state.sessions.firstOrNull { it.id == current }
+    val session = (state.sessions + state.archived.orEmpty()).firstOrNull { it.id == current }
+    val open = { s: SessionInfo -> RustBridge.open(s.id); current = s.id }
     if (session != null) {
-        BackHandler { current = null }
-        ChatScreen(state, session, onBack = { current = null })
+        val leave = { RustBridge.close(session.id); current = null }
+        BackHandler(onBack = leave)
+        ChatScreen(state, session, onBack = leave)
+    } else if (archive) {
+        BackHandler { archive = false }
+        ArchiveScreen(state, onOpen = open, onBack = { archive = false })
     } else {
         SessionsScreen(
             state,
-            onOpen = { RustBridge.open(it.id); current = it.id },
+            onOpen = open,
+            onArchive = { archive = true },
             onCreate = { project, agent ->
                 waitingFor = state.sessions.map { it.id }.toSet()
                 RustBridge.create(project.path, agent)
@@ -196,7 +206,7 @@ fun ErrorLine(state: AppState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Project, String) -> Unit) {
+fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onCreate: (Project, String) -> Unit) {
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var agentMenu by remember { mutableStateOf(false) }
@@ -231,6 +241,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                     }
                     IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "Menu") }
                     DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem(text = { Text("Archive") }, onClick = { menu = false; onArchive() })
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
                         DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; RustBridge.unpair() })
                         HorizontalDivider()
@@ -256,24 +267,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                     Text("No sessions yet.")
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(state.sessions, key = { it.id }) { s ->
-                        ListItem(
-                            headlineContent = { Text(s.project) },
-                            supportingContent = {
-                                Text(s.preview.ifEmpty { s.title }.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            },
-                            overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
-                            trailingContent = when {
-                                s.waiting -> ({ Badge(containerColor = MaterialTheme.colorScheme.tertiary) { Text("needs you", Modifier.padding(horizontal = 4.dp)) } })
-                                s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
-                                else -> null
-                            },
-                            modifier = Modifier.clickable { onOpen(s) },
-                        )
-                        HorizontalDivider()
-                    }
-                }
+                SessionList(state.sessions, "Archive", onOpen) { RustBridge.archive(it.id, true) }
             }
         }
     }
@@ -301,6 +295,85 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
             },
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ArchiveScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onBack: () -> Unit) {
+    // Only asked for here, and again after a reconnect.
+    val connected = state.status == "connected"
+    LaunchedEffect(connected) { if (connected) RustBridge.archived() }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Archive") },
+                navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            )
+        },
+    ) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            ErrorLine(state)
+            val archived = state.archived
+            when {
+                archived == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                archived.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No archived sessions. Swipe one away to archive it.")
+                }
+                else -> SessionList(archived, "Unarchive", onOpen) { RustBridge.archive(it.id, false) }
+            }
+        }
+    }
+}
+
+/** Sessions to open; swiping one either way does [onSwipe], which [swipeLabel] tells. */
+@Composable
+fun SessionList(sessions: List<SessionInfo>, swipeLabel: String, onOpen: (SessionInfo) -> Unit, onSwipe: (SessionInfo) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        items(sessions, key = { it.id }) { s ->
+            Swiped(swipeLabel, { onSwipe(s) }) {
+                ListItem(
+                    headlineContent = { Text(s.project) },
+                    supportingContent = {
+                        Text(s.preview.ifEmpty { s.title }.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                    overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
+                    trailingContent = when {
+                        s.waiting -> ({ Badge(containerColor = MaterialTheme.colorScheme.tertiary) { Text("needs you", Modifier.padding(horizontal = 4.dp)) } })
+                        s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
+                        else -> null
+                    },
+                    modifier = Modifier.clickable { onOpen(s) },
+                )
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+/** [content] that can be swiped away either way to do [onSwipe]; it leaves the list once the daemon moves it. */
+@Composable
+fun Swiped(label: String, onSwipe: () -> Unit, content: @Composable () -> Unit) {
+    val swipe = rememberSwipeToDismissBoxState(confirmValueChange = {
+        if (it != SwipeToDismissBoxValue.Settled) onSwipe()
+        true
+    })
+    // Back in place when the daemon did not take it, e.g. offline.
+    LaunchedEffect(swipe.currentValue) {
+        if (swipe.currentValue != SwipeToDismissBoxValue.Settled) {
+            delay(3000)
+            swipe.reset()
+        }
+    }
+    SwipeToDismissBox(
+        swipe,
+        backgroundContent = {
+            val start = swipe.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.secondaryContainer).padding(horizontal = 24.dp),
+                contentAlignment = if (start) Alignment.CenterStart else Alignment.CenterEnd,
+            ) { Text(label, color = MaterialTheme.colorScheme.onSecondaryContainer) }
+        },
+    ) { content() }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -334,7 +407,12 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                         AssistChip({ agentMenu = true }, { Text(session.provider) }, enabled = !session.running && state.agents.isNotEmpty(), trailingIcon = { DropArrow() })
                         AgentMenu(agentMenu, state.agents, session.provider, { agentMenu = false }) {
                             agentMenu = false
-                            if (it != session.provider) switchTo = it
+                            when {
+                                it == session.provider -> {}
+                                // Nothing to lose yet.
+                                state.messages[session.id]?.isEmpty() == true -> RustBridge.setAgent(session.id, it)
+                                else -> switchTo = it
+                            }
                         }
                     }
                     AssistChip({ pickingModel = true }, { Text(modelLabel(state, session), maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.widthIn(max = 200.dp), trailingIcon = { DropArrow() })
@@ -395,7 +473,11 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             enabled = state.status == "connected",
                         ) { Text("Send") }
                         voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                        session.running && draft.isBlank() -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
+                        // A voice message sent now waits in the queue.
+                        session.running && draft.isBlank() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (state.transcription != null) FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
+                            Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
+                        }
                         draft.isBlank() && state.transcription != null -> FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
                         else -> Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
