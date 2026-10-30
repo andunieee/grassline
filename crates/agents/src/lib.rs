@@ -116,7 +116,8 @@ pub enum Permissions {
     #[default]
     Ask,
     /// It decides by itself what is safe, and asks (or refuses) the rest:
-    /// Claude's auto mode, Codex's sandbox, and edits only for opencode.
+    /// Claude's auto mode, Codex's sandbox, and the project directory only for
+    /// opencode.
     Auto,
     /// It never asks.
     All,
@@ -215,13 +216,16 @@ impl Provider {
             Provider::Opencode => {
                 c.arg("acp");
                 // opencode allows everything unless configured otherwise.
-                let (edit, rest) = match opts.permissions {
-                    Permissions::Ask => ("ask", "ask"),
-                    Permissions::Auto => ("allow", "ask"),
-                    Permissions::All => ("allow", "allow"),
+                // The old `permission` object, which opencode 2 still reads.
+                let permission = match opts.permissions {
+                    Permissions::Ask => json!({ "edit": "ask", "bash": "ask", "webfetch": "ask" }),
+                    // Free inside the project, asks before files outside it.
+                    Permissions::Auto => json!({}),
+                    Permissions::All => {
+                        json!({ "edit": "allow", "bash": "allow", "webfetch": "allow" })
+                    }
                 };
-                let mut cfg =
-                    json!({ "permission": { "edit": edit, "bash": rest, "webfetch": rest } });
+                let mut cfg = json!({ "permission": permission });
                 if !opts.model.is_empty() {
                     cfg["model"] = json!(opts.model);
                 }
