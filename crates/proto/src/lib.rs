@@ -192,6 +192,9 @@ pub struct SessionInfo {
     pub path: String,
     pub provider: String,
     pub title: String,
+    /// The start of the agent's last message.
+    #[serde(default)]
+    pub preview: String,
     pub created: u64,
     pub updated: u64,
     pub running: bool,

@@ -118,6 +118,10 @@ impl Core {
                             q.steering = false;
                         }
                         settle_tools(&mut s.messages);
+                        if let Some(m) = s.messages.iter().rev().find(|m| m.role == Role::Assistant)
+                        {
+                            s.info.preview = first_line(&m.text);
+                        }
                         sessions.insert(s.info.id.clone(), s);
                     }
                     Err(e2) => eprintln!("{}: {e2}", e.path().display()),
@@ -419,6 +423,7 @@ impl Core {
             path: project.path,
             provider: provider.name().into(),
             title: String::new(),
+            preview: String::new(),
             created: now,
             updated: now,
             running: false,
@@ -500,14 +505,7 @@ impl Core {
             }
             let index = s.messages.len() - 1;
             if s.info.title.is_empty() && role == Role::User {
-                s.info.title = s.messages[index]
-                    .text
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(80)
-                    .collect();
+                s.info.title = first_line(&s.messages[index].text);
             }
             Some(index)
         })
@@ -561,6 +559,9 @@ impl Core {
             let now = now_ms();
             let index = f(s, now)?;
             s.info.updated = now;
+            if s.messages[index].role == Role::Assistant {
+                s.info.preview = first_line(&s.messages[index].text);
+            }
             (s.info.clone(), index, s.messages[index].clone())
         };
         let _ = self.updates.send(Update::Msg {
@@ -1063,6 +1064,12 @@ fn question(q: grassline_agents::Question) -> Question {
 
 fn pretty(v: &serde_json::Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
+/// The first line with text, in at most 80 characters.
+fn first_line(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty());
+    line.unwrap_or("").chars().take(80).collect()
 }
 
 fn clip(s: &str) -> String {

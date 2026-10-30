@@ -837,7 +837,10 @@ mod tests {
         // A setting waits for the server, which answers with what it
         // applied, and sends no elements when nothing else changed.
         l.write("permissions.value", json!("auto"));
-        let line = l.client.trigger("permissions", "onChange").expect("an action");
+        let line = l
+            .client
+            .trigger("permissions", "onChange")
+            .expect("an action");
         assert_eq!(l.client.attr("permissions", "disabled"), Some(json!(true)));
         l.server.receive(line.as_bytes());
         let out = l.server.output().take();

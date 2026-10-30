@@ -32,6 +32,8 @@ data class SessionInfo(
     val permissions: String = "ask",
     /** Messages sent while the agent works, in order. */
     val queue: List<Queued> = emptyList(),
+    /** The start of the agent's last message. */
+    val preview: String = "",
 )
 
 /** The speech-to-text service the daemon set up for voice messages. */
@@ -127,6 +129,7 @@ data class AppState(
                         it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
                         it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
                         it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
+                        it.optString("preview"),
                     )
                 },
                 transcription = o.optJSONObject("transcription")?.let {

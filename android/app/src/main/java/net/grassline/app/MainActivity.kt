@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -39,7 +40,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         RustBridge.init(filesDir.absolutePath)
         if (savedInstanceState == null) link.value = pairingLink(intent)
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { App(link.value) { link.value = null } } } }
+        val theme = ThemeSetting(this)
+        setContent { GrasslineTheme(theme) { Surface(Modifier.fillMaxSize()) { App(link.value) { link.value = null } } } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -195,6 +197,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
     var agentMenu by remember { mutableStateOf(false) }
     // The agent the next session gets; the default until another is picked.
     var agent by remember(picking, state.defaultAgent) { mutableStateOf(state.defaultAgent) }
+    val theme = LocalThemeSetting.current
     Scaffold(
         topBar = {
             TopAppBar(
@@ -225,6 +228,14 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
                         DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; RustBridge.unpair() })
+                        HorizontalDivider()
+                        for (m in ThemeMode.entries) {
+                            DropdownMenuItem(
+                                text = { Text(m.label) },
+                                leadingIcon = { Text(if (m == theme.mode) "✓" else "") },
+                                onClick = { menu = false; theme.set(m) },
+                            )
+                        }
                     }
                 },
             )
@@ -245,7 +256,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                         ListItem(
                             headlineContent = { Text(s.project) },
                             supportingContent = {
-                                Text(s.title.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(s.preview.ifEmpty { s.title }.ifEmpty { "(empty)" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             },
                             overlineContent = { Text("${s.provider} · ${ago(s.updated)}") },
                             trailingContent = when {
@@ -378,7 +389,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             enabled = state.status == "connected",
                         ) { Text("Send") }
                         voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                        session.running && draft.isBlank() -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop") }
+                        session.running && draft.isBlank() -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
                         draft.isBlank() && state.transcription != null -> FilledTonalButton(voice::start) { Text("🎤") }
                         else -> Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
@@ -425,8 +436,9 @@ fun QueuedLine(session: SessionInfo, q: Queued, steers: Boolean, onEdit: (String
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.End) {
         Box {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.widthIn(max = 320.dp).clickable(enabled = !q.steering) { menu = true },
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -538,7 +550,7 @@ fun AgentChips(agents: List<Agent>, picked: String, onPick: (String) -> Unit) {
 fun Bubble(sessionId: String, m: ChatMessage) {
     when (m.role) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.widthIn(max = 320.dp)) {
+            Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.widthIn(max = 320.dp)) {
                 SelectionContainer { Text(m.text, Modifier.padding(12.dp)) }
             }
         }
@@ -583,7 +595,7 @@ fun ToolLine(summary: String, t: ToolCall) {
 
 @Composable
 fun Code(text: String, maxLines: Int = 30) {
-    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+    Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
         SelectionContainer {
             Text(
                 text, Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),
@@ -609,7 +621,7 @@ fun PermissionCard(sessionId: String, summary: String, t: ToolCall, ask: Ask) {
     var note by remember(ask.request) { mutableStateOf("") }
     // A plan reads better as text than as JSON.
     val plan = if (t.name == "ExitPlanMode") runCatching { JSONObject(t.input).optString("plan") }.getOrNull()?.takeIf { it.isNotBlank() } else null
-    ElevatedCard(Modifier.fillMaxWidth()) {
+    OutlinedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(if (plan != null) "Approve the plan?" else "Allow ${t.name}?", style = MaterialTheme.typography.titleSmall)
             if (plan != null) {
@@ -640,7 +652,7 @@ fun QuestionsCard(sessionId: String, ask: Ask) {
     fun answer(q: Question): String? =
         other[q.question]?.takeIf { it.isNotBlank() }
             ?: picked[q.question]?.takeIf { it.isNotEmpty() }?.let { set -> q.options.map { it.label }.filter { it in set }.joinToString(", ") }
-    ElevatedCard(Modifier.fillMaxWidth()) {
+    OutlinedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             for (q in ask.questions) {
                 Column {
