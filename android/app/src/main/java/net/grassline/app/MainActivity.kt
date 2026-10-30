@@ -18,6 +18,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -217,14 +222,14 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                 actions = {
                     if (state.agents.isNotEmpty()) {
                         Box {
-                            TextButton({ agentMenu = true }) { Text(state.defaultAgent.ifEmpty { "agent" } + " ▾") }
+                            TextButton({ agentMenu = true }) { Text(state.defaultAgent.ifEmpty { "agent" }); DropArrow() }
                             AgentMenu(agentMenu, state.agents, state.defaultAgent, { agentMenu = false }) {
                                 agentMenu = false
                                 RustBridge.setDefaultAgent(it)
                             }
                         }
                     }
-                    TextButton({ menu = true }) { Text("⋮") }
+                    IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "Menu") }
                     DropdownMenu(menu, { menu = false }) {
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
                         DropdownMenuItem(text = { Text("Unpair") }, onClick = { menu = false; RustBridge.unpair() })
@@ -232,7 +237,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onCreate: (Pr
                         for (m in ThemeMode.entries) {
                             DropdownMenuItem(
                                 text = { Text(m.label) },
-                                leadingIcon = { Text(if (m == theme.mode) "✓" else "") },
+                                leadingIcon = { Tick(m == theme.mode) },
                                 onClick = { menu = false; theme.set(m) },
                             )
                         }
@@ -320,25 +325,25 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             Column {
                 TopAppBar(
                     title = { Text(session.project) },
-                    navigationIcon = { TextButton(onBack) { Text("←") } },
+                    navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 )
                 // What the next message runs with.
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box {
-                        AssistChip({ agentMenu = true }, { Text(session.provider + " ▾") }, enabled = !session.running && state.agents.isNotEmpty())
+                        AssistChip({ agentMenu = true }, { Text(session.provider) }, enabled = !session.running && state.agents.isNotEmpty(), trailingIcon = { DropArrow() })
                         AgentMenu(agentMenu, state.agents, session.provider, { agentMenu = false }) {
                             agentMenu = false
                             if (it != session.provider) switchTo = it
                         }
                     }
-                    AssistChip({ pickingModel = true }, { Text(modelLabel(state, session) + " ▾", maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.widthIn(max = 200.dp))
+                    AssistChip({ pickingModel = true }, { Text(modelLabel(state, session), maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.widthIn(max = 200.dp), trailingIcon = { DropArrow() })
                     Box {
-                        AssistChip({ permissionsMenu = true }, { Text(PERMISSIONS.firstOrNull { it.first == session.permissions }?.second.orEmpty() + " ▾") })
+                        AssistChip({ permissionsMenu = true }, { Text(PERMISSIONS.firstOrNull { it.first == session.permissions }?.second.orEmpty()) }, trailingIcon = { DropArrow() })
                         DropdownMenu(permissionsMenu, { permissionsMenu = false }) {
                             for ((value, label, about) in PERMISSIONS) {
                                 DropdownMenuItem(
                                     text = { Column { Text(label); Text(about, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) } },
-                                    leadingIcon = { Text(if (value == session.permissions) "✓" else "") },
+                                    leadingIcon = { Tick(value == session.permissions) },
                                     onClick = { permissionsMenu = false; RustBridge.setPermissions(session.id, value) },
                                 )
                             }
@@ -365,7 +370,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                 }
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (voice.phase == VoicePhase.Recording) {
-                        TextButton(voice::cancel) { Text("✕") }
+                        IconButton(voice::cancel) { Icon(Icons.Filled.Close, "Cancel") }
                         RecordingTime(voice.started, Modifier.weight(1f))
                     } else {
                         OutlinedTextField(
@@ -390,7 +395,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                         ) { Text("Send") }
                         voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                         session.running && draft.isBlank() -> Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
-                        draft.isBlank() && state.transcription != null -> FilledTonalButton(voice::start) { Text("🎤") }
+                        draft.isBlank() && state.transcription != null -> FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
                         else -> Button(
                             onClick = { RustBridge.send(session.id, draft); draft = "" },
                             enabled = draft.isNotBlank() && state.status == "connected",
@@ -505,7 +510,7 @@ fun ModelPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, on
                         ListItem(
                             headlineContent = { Text(m.name) },
                             supportingContent = (m.description.ifEmpty { m.id.takeIf { it != m.name } })?.let { { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis) } },
-                            leadingContent = { Text(if (m.id == session.model) "✓" else "") },
+                            leadingContent = { Tick(m.id == session.model) },
                             modifier = Modifier.clickable { onPick(m.id) },
                         )
                     }
@@ -528,7 +533,7 @@ fun AgentMenu(open: Boolean, agents: List<Agent>, current: String, onDismiss: ()
         for (a in agents) {
             DropdownMenuItem(
                 text = { Text(if (a.installed) a.name else "${a.name} (not installed)") },
-                leadingIcon = { Text(if (a.name == current) "✓" else "") },
+                leadingIcon = { Tick(a.name == current) },
                 enabled = a.installed,
                 onClick = { onPick(a.name) },
             )
@@ -577,10 +582,11 @@ fun ToolLine(summary: String, t: ToolCall) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             when (t.status) {
                 "running" -> CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
-                else -> Text(
-                    when (t.status) { "done" -> "✓"; "denied" -> "⊘"; else -> "✗" },
-                    style = mono,
-                    color = if (t.status == "done") MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.error,
+                else -> Icon(
+                    when (t.status) { "done" -> Icons.Filled.Check; "denied" -> Glyphs.Block; else -> Icons.Filled.Close },
+                    t.status,
+                    Modifier.size(14.dp),
+                    tint = if (t.status == "done") MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.error,
                 )
             }
             Spacer(Modifier.width(6.dp))
