@@ -213,10 +213,14 @@ fun OutdatedScreen(version: String?) {
     }
 }
 
-/** The last error the daemon reported; tapping it dismisses it. */
+/** The last error the daemon reported; it goes away after a while, or when tapped. */
 @Composable
 fun ErrorLine(state: AppState) {
     state.error?.let {
+        LaunchedEffect(it) {
+            delay(8_000)
+            RustBridge.dismissError()
+        }
         Row(Modifier.fillMaxWidth().clickable { RustBridge.dismissError() }.padding(horizontal = 16.dp, vertical = 4.dp)) {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
