@@ -15,8 +15,12 @@ pub struct Config {
     pub project_dirs: Vec<String>,
     pub default_provider: String,
     /// What the agents of new sessions may do without asking; the app
-    /// changes it for each session.
+    /// changes it for each session, and [`Config::model_permissions`] keeps
+    /// what was last picked with a model.
     pub permissions: Permissions,
+    /// What the agent may do without asking, by model (`provider/model`):
+    /// the mode last picked with that model.
+    pub model_permissions: std::collections::BTreeMap<String, Permissions>,
     /// The model new sessions use, by provider name; the last one the app
     /// picked.
     pub models: std::collections::BTreeMap<String, String>,
@@ -124,6 +128,7 @@ impl Default for Config {
             project_dirs: vec![],
             default_provider: "claude".into(),
             permissions: Permissions::Auto,
+            model_permissions: Default::default(),
             models: Default::default(),
             binaries: Default::default(),
             // Localhost only until the admin says otherwise.
@@ -187,6 +192,26 @@ impl Config {
         format!("grassline@{}", self.machine_name())
     }
 
+    /// What the agent may do without asking with a model: the mode last
+    /// picked with it, or the configured default.
+    pub fn permissions_for(&self, provider: &str, model: &str) -> Permissions {
+        self.model_permissions
+            .get(&model_key(provider, model))
+            .copied()
+            .unwrap_or(self.permissions)
+    }
+
+    /// Remembers the mode picked with a model.
+    pub fn remember_permissions(
+        &mut self,
+        provider: &str,
+        model: &str,
+        permissions: Permissions,
+    ) {
+        self.model_permissions
+            .insert(model_key(provider, model), permissions);
+    }
+
     pub fn options(&self, provider: grassline_agents::Provider) -> grassline_agents::Options {
         grassline_agents::Options {
             binary: self
@@ -208,6 +233,11 @@ pub fn hostname() -> String {
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "grassline".into())
+}
+
+/// The key a model's remembered mode is stored under.
+fn model_key(provider: &str, model: &str) -> String {
+    format!("{provider}/{model}")
 }
 
 fn dir_from_env(var: &str, fallback: &[&str]) -> PathBuf {

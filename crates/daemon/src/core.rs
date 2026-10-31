@@ -289,6 +289,7 @@ impl Core {
     pub fn set_agent(&self, id: &str, name: &str) -> Result<(), String> {
         let provider = self.installed(name)?;
         let model = self.default_model(provider.name());
+        let permissions = self.config().permissions_for(provider.name(), &model);
         let info = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id).ok_or("no such session")?;
@@ -300,6 +301,7 @@ impl Core {
             }
             s.info.provider = provider.name().into();
             s.info.model = model;
+            s.info.permissions = permissions;
             s.info.updated = now_ms();
             // The other agent's conversation id means nothing to this one,
             // nor do the tools allowed to it.
@@ -350,19 +352,32 @@ impl Core {
     }
 
     /// Sets the model of a session, and of the next sessions with its agent.
+    /// The session takes the mode last picked with the new model.
     pub fn set_model(&self, id: &str, model: &str) -> Result<(), String> {
         let model = model.trim().to_string();
+        let cfg = self.config();
         let mut provider = String::new();
         self.edit_info(id, |i| {
             provider = i.provider.clone();
             i.model = model.clone();
+            i.permissions = cfg.permissions_for(&i.provider, &model);
         })?;
         self.update_config(|c| c.models.insert(provider, model));
         Ok(())
     }
 
+    /// Sets what a session's agent may do without asking, and remembers it
+    /// for that session's model.
     pub fn set_permissions(&self, id: &str, permissions: Permissions) -> Result<(), String> {
-        self.edit_info(id, |i| i.permissions = permissions)
+        let mut provider = String::new();
+        let mut model = String::new();
+        self.edit_info(id, |i| {
+            provider = i.provider.clone();
+            model = i.model.clone();
+            i.permissions = permissions;
+        })?;
+        self.update_config(|c| c.remember_permissions(&provider, &model, permissions));
+        Ok(())
     }
 
     pub fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
@@ -421,6 +436,8 @@ impl Core {
                 .unwrap_or(&cfg.default_provider),
         )?;
         let now = now_ms();
+        let model = cfg.models.get(provider.name()).cloned().unwrap_or_default();
+        let permissions = cfg.permissions_for(provider.name(), &model);
         let info = SessionInfo {
             id: random_hex(8),
             project: project.name,
@@ -432,8 +449,8 @@ impl Core {
             updated: now,
             running: false,
             waiting: false,
-            model: cfg.models.get(provider.name()).cloned().unwrap_or_default(),
-            permissions: cfg.permissions,
+            model,
+            permissions,
             queue: vec![],
             archived: false,
         };
@@ -1230,6 +1247,33 @@ while True:
             .into_iter()
             .map(|m| (m.role, m.text))
             .collect()
+    }
+
+    #[test]
+    fn remembers_the_mode_picked_for_each_model() {
+        let (core, id, dir) = core("mode");
+        let project = dir.join("project").to_string_lossy().to_string();
+        core.set_model(&id, "one").unwrap();
+        core.set_permissions(&id, Permissions::All).unwrap();
+
+        // The next session with that model starts in its mode.
+        let next = core.create_session(&project, Some("claude")).unwrap();
+        assert_eq!(next.model, "one");
+        assert_eq!(next.permissions, Permissions::All);
+
+        // Another model starts from the configured default, and remembers
+        // what is picked with it.
+        core.set_model(&next.id, "two").unwrap();
+        assert_eq!(info(&core, &next.id).permissions, Permissions::Auto);
+        core.set_permissions(&next.id, Permissions::Ask).unwrap();
+        let third = core.create_session(&project, Some("claude")).unwrap();
+        assert_eq!(third.model, "two");
+        assert_eq!(third.permissions, Permissions::Ask);
+
+        // Going back to the first model brings its mode back.
+        core.set_model(&third.id, "one").unwrap();
+        assert_eq!(info(&core, &third.id).permissions, Permissions::All);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
