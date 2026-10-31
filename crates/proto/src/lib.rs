@@ -308,8 +308,7 @@ pub enum ServerMsg {
     Hello {
         ok: bool,
         error: Option<String>,
-        /// What the daemon calls itself (its host's name), for the app to tell
-        /// daemons apart.
+        /// What the daemon calls itself, for the app to tell daemons apart.
         name: String,
     },
     Projects {

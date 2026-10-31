@@ -22,6 +22,7 @@ pub async fn serve(
 
     let mut pending = None;
     let name = core.config().daemon_name();
+    let mut announced = name.clone();
     let refuse = |why: &str| ServerMsg::Hello {
         ok: false,
         error: Some(why.into()),
@@ -115,6 +116,12 @@ pub async fn serve(
                 // transcription may have changed.
                 write(&mut send, &agents(&core)).await?;
                 write(&mut send, &transcription(&core)).await?;
+                // So may have the name the app lists this machine under.
+                let name = core.config().daemon_name();
+                if name != announced {
+                    announced = name.clone();
+                    write(&mut send, &ServerMsg::Hello { ok: true, error: None, name }).await?;
+                }
             }
         }
     }
