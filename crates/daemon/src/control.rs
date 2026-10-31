@@ -60,9 +60,7 @@ pub async fn serve(
     let (later, mut late) = mpsc::unbounded_channel::<ServerMsg>();
     write(
         &mut send,
-        &ServerMsg::Projects {
-            items: core.projects(),
-        },
+        &projects(&core),
     )
     .await?;
     write(&mut send, &agents(&core)).await?;
@@ -87,6 +85,7 @@ pub async fn serve(
             Some(m) = late.recv() => write(&mut send, &m).await?,
             u = updates.recv() => match u {
                 Ok(Update::Session(info)) => write(&mut send, &ServerMsg::Session { info }).await?,
+                Ok(Update::Projects) => write(&mut send, &projects(&core)).await?,
                 Ok(Update::Removed(id)) => {
                     opened.remove(&id);
                     write(&mut send, &sessions(&core)).await?;
@@ -112,8 +111,9 @@ pub async fn serve(
                     let _ = send.finish();
                     return Ok(());
                 }
-                // The default agent, the agent binaries or the
-                // transcription may have changed.
+                // The project folders, the default agent, the agent
+                // binaries or the transcription may have changed.
+                write(&mut send, &projects(&core)).await?;
                 write(&mut send, &agents(&core)).await?;
                 write(&mut send, &transcription(&core)).await?;
                 // So may have the name the app lists this machine under.
@@ -140,9 +140,7 @@ async fn handle(
         ClientMsg::Refresh => {
             write(
                 send,
-                &ServerMsg::Projects {
-                    items: core.projects(),
-                },
+                &projects(core),
             )
             .await?;
             write(send, &agents(core)).await?;
@@ -205,6 +203,29 @@ async fn handle(
                 Err(e) => write(send, &err(e)).await?,
             }
         }
+        ClientMsg::CreateProject {
+            root,
+            name,
+            provider,
+        } => {
+            let created = core
+                .create_project(&root, &name)
+                .and_then(|path| core.create_session(&path, provider.as_deref()));
+            match created {
+                Ok(info) => {
+                    opened.insert(info.id.clone());
+                    write(
+                        send,
+                        &ServerMsg::History {
+                            id: info.id,
+                            messages: vec![],
+                        },
+                    )
+                    .await?;
+                }
+                Err(e) => write(send, &err(e)).await?,
+            }
+        }
         ClientMsg::Archive { id, archived } => {
             if let Err(e) = core.set_archived(&id, archived) {
                 write(send, &err(e)).await?;
@@ -254,6 +275,13 @@ async fn handle(
 fn sessions(core: &Core) -> ServerMsg {
     ServerMsg::Sessions {
         items: core.sessions().into_iter().filter(|s| !s.archived).collect(),
+    }
+}
+
+fn projects(core: &Core) -> ServerMsg {
+    ServerMsg::Projects {
+        items: core.projects(),
+        roots: core.config().project_roots,
     }
 }
 

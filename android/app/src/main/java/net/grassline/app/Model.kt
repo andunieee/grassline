@@ -104,6 +104,8 @@ data class AppState(
     /** Why it is offline or refused; when outdated, the daemon's protocol version. */
     val reason: String? = null,
     val projects: List<Project> = emptyList(),
+    /** The daemon's folders whose subfolders are projects; new projects go in one of them. */
+    val roots: List<String> = emptyList(),
     val agents: List<Agent> = emptyList(),
     /** The agent new sessions use by default. */
     val defaultAgent: String = "",
@@ -132,6 +134,7 @@ data class AppState(
                 status = o.getString("state"),
                 reason = o.optString("reason").takeIf { !o.isNull("reason") && it.isNotEmpty() },
                 projects = o.getJSONArray("projects").map { Project(it.getString("name"), it.getString("path")) },
+                roots = o.optJSONArray("roots")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
                 agents = o.optJSONArray("agents").map { Agent(it.getString("name"), it.optBoolean("installed"), it.optBoolean("steers")) },
                 defaultAgent = o.optString("default_agent"),
                 models = o.optJSONObject("models")?.let { m ->

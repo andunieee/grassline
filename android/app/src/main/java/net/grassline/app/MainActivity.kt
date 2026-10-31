@@ -29,6 +29,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -134,6 +136,10 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
                 waitingFor = state.sessions.map { it.id }.toSet()
                 RustBridge.create(project.path, agent)
             },
+            onCreateProject = { root, name, agent ->
+                waitingFor = state.sessions.map { it.id }.toSet()
+                RustBridge.createProject(root, name, agent)
+            },
         )
     }
 }
@@ -229,7 +235,7 @@ fun ErrorLine(state: AppState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onAddDaemon: () -> Unit, onCreate: (Project, String) -> Unit) {
+fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onAddDaemon: () -> Unit, onCreate: (Project, String) -> Unit, onCreateProject: (root: String, name: String, agent: String) -> Unit = { _, _, _ -> }) {
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var daemonMenu by remember { mutableStateOf(false) }
@@ -325,28 +331,80 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
         }
     }
     if (picking) {
+        // The new project's name while one is being made.
+        var naming by remember { mutableStateOf<String?>(null) }
+        var root by remember(state.roots) { mutableStateOf(state.roots.firstOrNull().orEmpty()) }
+        val name = naming
         AlertDialog(
             onDismissRequest = { picking = false },
-            confirmButton = { TextButton({ picking = false }) { Text("Cancel") } },
-            title = { Text("Project") },
+            dismissButton = when {
+                name != null -> { { TextButton({ naming = null }) { Text("Back") } } }
+                state.roots.isNotEmpty() -> { { TextButton({ naming = "" }) { Text("New project") } } }
+                else -> null
+            },
+            confirmButton = {
+                if (name == null) {
+                    TextButton({ picking = false }) { Text("Cancel") }
+                } else {
+                    Button({ picking = false; onCreateProject(root, name.trim(), agent) }, enabled = name.isNotBlank() && root.isNotEmpty()) { Text("Create") }
+                }
+            },
+            title = { Text(if (name == null) "Project" else "New project") },
             text = {
-                if (state.projects.isEmpty()) {
+                if (state.projects.isEmpty() && state.roots.isEmpty()) {
                     Text("The daemon has no projects. Add a project directory in its admin interface.")
                 } else {
                     var query by remember { mutableStateOf("") }
                     val projects = state.projects.filter { matches(query, "${it.name} ${it.path}") }
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         AgentChips(state.agents, agent) { agent = it }
-                        // Only worth it when the list is long.
-                        if (state.projects.size > 5) FilterField(query) { query = it }
-                        PickerList(projects.map { PickerItem(it.path, it.name, it.path) }) { path ->
-                            picking = false
-                            onCreate(state.projects.first { it.path == path }, agent)
+                        when {
+                            name != null -> NewProjectForm(name, { naming = it }, state.roots, root) { root = it }
+                            projects.isEmpty() && query.isEmpty() -> Text("No projects yet.", color = MaterialTheme.colorScheme.outline)
+                            else -> {
+                                // Only worth it when the list is long.
+                                if (state.projects.size > 5) FilterField(query) { query = it }
+                                PickerList(projects.map { PickerItem(it.path, it.name, it.path) }) { path ->
+                                    picking = false
+                                    onCreate(state.projects.first { it.path == path }, agent)
+                                }
+                            }
                         }
                     }
                 }
             },
         )
+    }
+}
+
+/** The name of a new project, and which of the daemon's folders it goes in when there are several. */
+@Composable
+fun NewProjectForm(name: String, onName: (String) -> Unit, roots: List<String>, root: String, onRoot: (String) -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            name, onName, Modifier.fillMaxWidth().focusRequester(focus),
+            label = { Text("Name") }, singleLine = true, shape = RoundedCornerShape(12.dp),
+        )
+        if (roots.size > 1) {
+            var open by remember { mutableStateOf(false) }
+            Box {
+                OutlinedTextField(
+                    root, {}, Modifier.fillMaxWidth(), readOnly = true, singleLine = true,
+                    label = { Text("In") }, trailingIcon = { DropArrow() }, shape = RoundedCornerShape(12.dp),
+                )
+                // The field only shows the choice; a tap anywhere on it opens the menu.
+                Box(Modifier.matchParentSize().clickable { open = true })
+                DropdownMenu(open, { open = false }) {
+                    for (r in roots) {
+                        DropdownMenuItem(text = { Text(r) }, leadingIcon = { Tick(r == root) }, onClick = { open = false; onRoot(r) })
+                    }
+                }
+            }
+        } else {
+            Text("In $root", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+        }
     }
 }
 

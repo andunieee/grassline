@@ -111,6 +111,7 @@ macro_rules! simple {
 simple! {
     Java_net_grassline_app_RustBridge_switchTo(endpoint) => |c, endpoint| c.switch_to(&endpoint);
     Java_net_grassline_app_RustBridge_create(project, provider) => |c, project, provider| c.create(&project, &provider);
+    Java_net_grassline_app_RustBridge_createProject(root, name, provider) => |c, root, name, provider| c.create_project(&root, &name, &provider);
     Java_net_grassline_app_RustBridge_setDefaultAgent(provider) => |c, provider| c.set_default_agent(&provider);
     Java_net_grassline_app_RustBridge_setAgent(id, provider) => |c, id, provider| c.set_agent(&id, &provider);
     Java_net_grassline_app_RustBridge_setModel(id, model) => |c, id, model| c.set_model(&id, &model);

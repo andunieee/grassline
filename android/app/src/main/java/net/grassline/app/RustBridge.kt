@@ -24,6 +24,9 @@ object RustBridge {
     @JvmStatic external fun refresh()
     /** Creates a session in [project] with [provider], or the default agent when it is empty. */
     @JvmStatic external fun create(project: String, provider: String)
+
+    /** Makes project [name] in [root] and creates a session in it, like [create]. */
+    @JvmStatic external fun createProject(root: String, name: String, provider: String)
     @JvmStatic external fun setDefaultAgent(provider: String)
 
     /** Switches a session to another agent; it starts a new conversation. */

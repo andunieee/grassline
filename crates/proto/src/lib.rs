@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -230,6 +230,13 @@ pub enum ClientMsg {
         project: String,
         provider: Option<String>,
     },
+    /// Makes directory `name` in `root`, one of [`ServerMsg::Projects`]'
+    /// roots, and creates a session in it like [`ClientMsg::Create`].
+    CreateProject {
+        root: String,
+        name: String,
+        provider: Option<String>,
+    },
     /// Sets the agent new sessions use by default.
     SetDefaultAgent {
         provider: String,
@@ -313,6 +320,10 @@ pub enum ServerMsg {
     },
     Projects {
         items: Vec<Project>,
+        /// The directories whose subdirectories are projects, as
+        /// configured; new projects go in one of them.
+        #[serde(default)]
+        roots: Vec<String>,
     },
     /// The agents, and the one new sessions use by default.
     Agents {

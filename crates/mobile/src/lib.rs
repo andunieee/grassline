@@ -39,6 +39,8 @@ pub enum Status {
 struct State {
     status: Option<Status>,
     projects: Vec<Project>,
+    /// Where new projects can go.
+    roots: Vec<String>,
     agents: Vec<Agent>,
     /// The agent new sessions use by default.
     default_agent: String,
@@ -294,6 +296,16 @@ impl Controller {
         });
     }
 
+    /// Makes project `name` in `root` and creates a session in it with
+    /// `provider`, or the default agent when it is empty.
+    pub fn create_project(&self, root: &str, name: &str, provider: &str) {
+        self.send(ClientMsg::CreateProject {
+            root: root.into(),
+            name: name.into(),
+            provider: (!provider.is_empty()).then(|| provider.into()),
+        });
+    }
+
     pub fn set_default_agent(&self, provider: &str) {
         self.send(ClientMsg::SetDefaultAgent {
             provider: provider.into(),
@@ -407,7 +419,8 @@ impl Controller {
         self.shared.edit(|s| s.error = None);
     }
 
-    /// The state as JSON: `status`, `reason`, `projects`, `agents` (with
+    /// The state as JSON: `status`, `reason`, `projects`, `roots` (where new
+    /// projects can go), `agents` (with
     /// whether each is installed and `steers`), `default_agent`, `models` (by
     /// agent: `items`, `error` and `loading`), `sessions` (most recent first,
     /// each with its `model`, `permissions` and `queue`), `archived` (the
@@ -423,6 +436,7 @@ impl Controller {
         let mut v = serde_json::to_value(s.status.clone().unwrap_or(Status::Connecting)).unwrap();
         let o = v.as_object_mut().unwrap();
         o.insert("projects".into(), json!(s.projects));
+        o.insert("roots".into(), json!(s.roots));
         o.insert("agents".into(), json!(s.agents));
         o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("models".into(), json!(s.models));
@@ -604,7 +618,10 @@ async fn talk(
 fn apply(shared: &Shared, msg: ServerMsg) {
     shared.edit(|s| match msg {
         ServerMsg::Hello { .. } => {}
-        ServerMsg::Projects { items } => s.projects = items,
+        ServerMsg::Projects { items, roots } => {
+            s.projects = items;
+            s.roots = roots;
+        }
         ServerMsg::Agents { items, default } => {
             s.agents = items;
             s.default_agent = default;

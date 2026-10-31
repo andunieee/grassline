@@ -34,6 +34,8 @@ pub enum Update {
     Session(SessionInfo),
     /// The session was deleted.
     Removed(String),
+    /// A project was added.
+    Projects,
     Msg {
         id: String,
         index: usize,
@@ -252,6 +254,26 @@ impl Core {
         }
         out.sort_by_key(|p| p.name.to_lowercase());
         out
+    }
+
+    /// Makes directory `name` in `root`, one of the project roots; it is a
+    /// project from then on. Answers its path.
+    pub fn create_project(&self, root: &str, name: &str) -> Result<String, String> {
+        if !self.config().project_roots.iter().any(|r| r == root) {
+            return Err("that is not one of the project folders".into());
+        }
+        let name = name.trim();
+        // Hidden directories are not listed as projects.
+        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
+            return Err(format!("“{name}” cannot be a folder name"));
+        }
+        let dir = expand(root).join(name);
+        std::fs::create_dir(&dir).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => format!("there is already a project named “{name}”"),
+            _ => format!("could not make {}: {e}", dir.display()),
+        })?;
+        let _ = self.updates.send(Update::Projects);
+        Ok(dir.to_string_lossy().into_owned())
     }
 
     // ---- agents
@@ -1247,6 +1269,28 @@ while True:
             .into_iter()
             .map(|m| (m.role, m.text))
             .collect()
+    }
+
+    #[test]
+    fn creates_projects_in_a_root() {
+        let (core, _, dir) = core("new-project");
+        let root = dir.join("code");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.to_string_lossy().to_string();
+        core.update_config(|c| c.project_roots = vec![root.clone()]);
+
+        let path = core.create_project(&root, " fresh ").unwrap();
+        assert!(Path::new(&path).is_dir());
+        assert!(core.projects().iter().any(|p| p.name == "fresh" && p.path == path));
+        assert!(core.create_session(&path, Some("claude")).is_ok());
+
+        assert!(core.create_project(&root, "fresh").unwrap_err().contains("already"));
+        for bad in ["", ".hidden", "a/b", "../up"] {
+            assert!(core.create_project(&root, bad).is_err(), "{bad}");
+        }
+        let elsewhere = dir.to_string_lossy();
+        assert!(core.create_project(&elsewhere, "x").is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
