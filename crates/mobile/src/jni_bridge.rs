@@ -123,6 +123,7 @@ simple! {
     Java_net_grassline_app_RustBridge_models(provider) => |c, provider| c.models(&provider);
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
     Java_net_grassline_app_RustBridge_close(id) => |c, id| c.close(&id);
+    Java_net_grassline_app_RustBridge_delete(id) => |c, id| c.delete(&id);
     Java_net_grassline_app_RustBridge_stop(id) => |c, id| c.stop(&id);
     Java_net_grassline_app_RustBridge_send(id, text) => |c, id, text| c.send_text(&id, &text);
     Java_net_grassline_app_RustBridge_sendNow(id, queued) => |c, id, queued| c.send_now(&id, &queued);

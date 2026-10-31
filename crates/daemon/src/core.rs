@@ -1368,6 +1368,19 @@ while True:
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn deleting_a_session_removes_its_file() {
+        let (core, id, dir) = core("delete");
+        let file = dir.join("data").join("sessions").join(format!("{id}.json"));
+        assert!(file.is_file());
+
+        core.delete_session(&id);
+
+        assert!(!core.sessions().iter().any(|s| s.id == id));
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn sending_takes_a_session_out_of_the_archive() {
         let (core, id, dir) = core("archive");

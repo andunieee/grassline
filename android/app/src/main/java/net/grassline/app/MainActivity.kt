@@ -7,9 +7,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -326,7 +328,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
                     Text("No sessions yet.")
                 }
             } else {
-                SessionList(state.sessions, "Archive", onOpen) { RustBridge.archive(it.id, true) }
+                SessionList(state.sessions, "Archive", onOpen, { RustBridge.archive(it.id, true) }, { RustBridge.delete(it.id) })
             }
         }
     }
@@ -430,15 +432,18 @@ fun ArchiveScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onBack: () -> 
                 archived.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("No archived sessions. Swipe one away to archive it.")
                 }
-                else -> SessionList(archived, "Unarchive", onOpen) { RustBridge.archive(it.id, false) }
+                else -> SessionList(archived, "Unarchive", onOpen, { RustBridge.archive(it.id, false) }, { RustBridge.delete(it.id) })
             }
         }
     }
 }
 
-/** Sessions to open; swiping one either way does [onSwipe], which [swipeLabel] tells. */
+/** Sessions to open; swiping one either way does [onSwipe], which [swipeLabel] tells, and holding it asks to [onDelete] it. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SessionList(sessions: List<SessionInfo>, swipeLabel: String, onOpen: (SessionInfo) -> Unit, onSwipe: (SessionInfo) -> Unit) {
+fun SessionList(sessions: List<SessionInfo>, swipeLabel: String, onOpen: (SessionInfo) -> Unit, onSwipe: (SessionInfo) -> Unit, onDelete: (SessionInfo) -> Unit) {
+    // The session a long press asks to delete.
+    var deleting by remember { mutableStateOf<SessionInfo?>(null) }
     LazyColumn(Modifier.fillMaxSize()) {
         items(sessions, key = { it.id }) { s ->
             Swiped(swipeLabel, { onSwipe(s) }) {
@@ -453,11 +458,27 @@ fun SessionList(sessions: List<SessionInfo>, swipeLabel: String, onOpen: (Sessio
                         s.running -> ({ CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) })
                         else -> null
                     },
-                    modifier = Modifier.clickable { onOpen(s) },
+                    modifier = Modifier.combinedClickable(onClick = { onOpen(s) }, onLongClick = { deleting = s }),
                 )
             }
             HorizontalDivider()
         }
+    }
+    deleting?.let { s ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete session?") },
+            text = {
+                Text("“${s.preview.ifEmpty { s.title }.ifEmpty { s.project }}” and its messages will be deleted from the daemon. This cannot be undone.")
+            },
+            dismissButton = { TextButton({ deleting = null }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(
+                    { deleting = null; onDelete(s) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Delete") }
+            },
+        )
     }
 }
 

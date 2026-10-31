@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -271,6 +271,10 @@ pub enum ClientMsg {
     },
     /// Asks for the archived sessions; answered with [`ServerMsg::Archived`].
     Archived,
+    /// Deletes session `id` and its stored messages from the daemon.
+    Delete {
+        id: String,
+    },
     /// Starts receiving the messages of a session.
     Open {
         id: String,
@@ -352,6 +356,10 @@ pub enum ServerMsg {
     /// archive.
     Session {
         info: SessionInfo,
+    },
+    /// Session `id` was deleted, with its stored messages.
+    Removed {
+        id: String,
     },
     History {
         id: String,

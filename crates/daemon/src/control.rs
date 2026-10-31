@@ -88,7 +88,7 @@ pub async fn serve(
                 Ok(Update::Projects) => write(&mut send, &projects(&core)).await?,
                 Ok(Update::Removed(id)) => {
                     opened.remove(&id);
-                    write(&mut send, &sessions(&core)).await?;
+                    write(&mut send, &ServerMsg::Removed { id }).await?;
                 }
                 Ok(Update::Msg { id, index, message }) => {
                     if opened.contains(&id) {
@@ -234,6 +234,10 @@ async fn handle(
         ClientMsg::Archived => {
             let items = core.sessions().into_iter().filter(|s| s.archived).collect();
             write(send, &ServerMsg::Archived { items }).await?;
+        }
+        ClientMsg::Delete { id } => {
+            opened.remove(&id);
+            core.delete_session(&id);
         }
         ClientMsg::Open { id } => match core.messages(&id) {
             Some(messages) => {

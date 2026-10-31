@@ -46,6 +46,8 @@ object RustBridge {
     @JvmStatic external fun open(id: String)
     /** Leaves a session; the daemon deletes it when nothing was sent to it. */
     @JvmStatic external fun close(id: String)
+    /** Deletes a session from the daemon, with its stored messages. */
+    @JvmStatic external fun delete(id: String)
     /** Sends a message; while the agent works, it is queued. */
     @JvmStatic external fun send(id: String, text: String)
     /** Sends a [Queued] message now: into the running turn when the agent [Agent.steers], otherwise by stopping it. */

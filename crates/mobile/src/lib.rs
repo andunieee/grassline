@@ -366,6 +366,12 @@ impl Controller {
         self.send(ClientMsg::Archived);
     }
 
+    /// Deletes a session from the daemon, with its stored messages.
+    pub fn delete(&self, id: &str) {
+        self.shared.opened.lock().unwrap().remove(id);
+        self.send(ClientMsg::Delete { id: id.into() });
+    }
+
     pub fn open(&self, id: &str) {
         self.shared.opened.lock().unwrap().insert(id.into());
         self.send(ClientMsg::Open { id: id.into() });
@@ -616,6 +622,9 @@ async fn talk(
 }
 
 fn apply(shared: &Shared, msg: ServerMsg) {
+    if let ServerMsg::Removed { id } = &msg {
+        shared.opened.lock().unwrap().remove(id);
+    }
     shared.edit(|s| match msg {
         ServerMsg::Hello { .. } => {}
         ServerMsg::Projects { items, roots } => {
@@ -659,6 +668,13 @@ fn apply(shared: &Shared, msg: ServerMsg) {
                 list.push(info);
                 list.sort_by(|a, b| b.updated.cmp(&a.updated).then(a.id.cmp(&b.id)));
             }
+        }
+        ServerMsg::Removed { id } => {
+            s.sessions.retain(|i| i.id != id);
+            if let Some(a) = &mut s.archived {
+                a.retain(|i| i.id != id);
+            }
+            s.messages.remove(&id);
         }
         ServerMsg::History { id, messages } => {
             s.messages.insert(id, messages);
