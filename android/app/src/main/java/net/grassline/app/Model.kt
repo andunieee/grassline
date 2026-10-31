@@ -34,7 +34,7 @@ data class SessionInfo(
     /** An [AgentModel.id]; empty for the agent's default. */
     val model: String = "",
     /** ask, auto or all. */
-    val permissions: String = "ask",
+    val permissions: String = "auto",
     /** Messages sent while the agent works, in order. */
     val queue: List<Queued> = emptyList(),
     /** The start of the agent's last message. */
@@ -72,7 +72,7 @@ private fun JSONObject.optStringOrNull(k: String): String? = if (isNull(k)) null
 private fun parseSession(it: JSONObject) = SessionInfo(
     it.getString("id"), it.getString("project"), it.getString("provider"),
     it.getString("title"), it.getLong("updated"), it.getBoolean("running"),
-    it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "ask"),
+    it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "auto"),
     it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
     it.optString("preview"),
 )

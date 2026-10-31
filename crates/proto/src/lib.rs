@@ -153,10 +153,10 @@ pub struct Model {
 #[serde(rename_all = "snake_case")]
 pub enum Permissions {
     /// It asks before every tool that needs permission.
-    #[default]
     Ask,
     /// It decides by itself what is safe and asks for the rest (how depends
     /// on the agent).
+    #[default]
     Auto,
     /// It never asks.
     All,

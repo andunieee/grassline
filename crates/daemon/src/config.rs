@@ -123,7 +123,7 @@ impl Default for Config {
             project_roots: vec![],
             project_dirs: vec![],
             default_provider: "claude".into(),
-            permissions: Permissions::Ask,
+            permissions: Permissions::Auto,
             models: Default::default(),
             binaries: Default::default(),
             // Localhost only until the admin says otherwise.
@@ -245,6 +245,11 @@ mod tests {
         std::fs::write(&path, r#"{"auto_approve":true,"permissions":"auto"}"#).unwrap();
         assert_eq!(Config::load(&path).permissions, Permissions::Auto);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn auto_is_the_default_mode() {
+        assert_eq!(Config::default().permissions, Permissions::Auto);
     }
 
     #[test]

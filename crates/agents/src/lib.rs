@@ -113,11 +113,11 @@ impl Answer {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Permissions {
     /// It asks before every tool that needs permission.
-    #[default]
     Ask,
     /// It decides by itself what is safe, and asks (or refuses) the rest:
     /// Claude's auto mode, Codex's sandbox, and the project directory only for
     /// opencode.
+    #[default]
     Auto,
     /// It never asks.
     All,
