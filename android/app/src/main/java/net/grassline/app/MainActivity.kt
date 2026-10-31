@@ -333,15 +333,15 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
                 if (state.projects.isEmpty()) {
                     Text("The daemon has no projects. Add a project directory in its admin interface.")
                 } else {
-                    Column {
+                    var query by remember { mutableStateOf("") }
+                    val projects = state.projects.filter { matches(query, "${it.name} ${it.path}") }
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         AgentChips(state.agents, agent) { agent = it }
-                        LazyColumn {
-                            items(state.projects, key = { it.path }) { p ->
-                                ListItem(
-                                    headlineContent = { Text(p.name) },
-                                    modifier = Modifier.clickable { picking = false; onCreate(p, agent) },
-                                )
-                            }
+                        // Only worth it when the list is long.
+                        if (state.projects.size > 5) FilterField(query) { query = it }
+                        PickerList(projects.map { PickerItem(it.path, it.name, it.path) }) { path ->
+                            picking = false
+                            onCreate(state.projects.first { it.path == path }, agent)
                         }
                     }
                 }
@@ -455,7 +455,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                     navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 )
                 // What the next message runs with.
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box {
                         AssistChip({ agentMenu = true }, { Text(session.provider) }, enabled = !session.running && state.agents.isNotEmpty(), trailingIcon = { DropArrow() })
                         AgentMenu(agentMenu, state.agents, session.provider, { agentMenu = false }) {
@@ -468,7 +468,8 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             }
                         }
                     }
-                    AssistChip({ pickingModel = true }, { Text(modelLabel(state, session), maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.widthIn(max = 200.dp), trailingIcon = { DropArrow() })
+                    // A long name is cut so the chips after it stay on screen.
+                    AssistChip({ pickingModel = true }, { Text(modelLabel(state, session), maxLines = 1, overflow = TextOverflow.Ellipsis) }, Modifier.weight(1f, fill = false).widthIn(max = 200.dp), trailingIcon = { DropArrow() })
                     Box {
                         AssistChip({ permissionsMenu = true }, { Text(PERMISSIONS.firstOrNull { it.first == session.permissions }?.second.orEmpty()) }, trailingIcon = { DropArrow() })
                         DropdownMenu(permissionsMenu, { permissionsMenu = false }) {
@@ -621,41 +622,31 @@ fun ModelPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, on
     LaunchedEffect(session.provider) { RustBridge.models(session.provider) }
     val list = state.models[session.provider]
     var query by remember { mutableStateOf("") }
-    val words = query.lowercase().split(' ').filter { it.isNotBlank() }
     val items = list?.items.orEmpty().let { items ->
         // There is always a way back to the agent's own choice.
         if (items.any { it.id.isEmpty() }) items else listOf(AgentModel("", "Default", "Whatever ${session.provider} picks")) + items
-    }.filter { m -> "${m.id} ${m.name} ${m.description}".lowercase().let { t -> words.all { it in t } } }
+    }.filter { matches(query, "${it.id} ${it.name} ${it.description}") }
     val typed = query.trim()
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onDismiss) { Text("Cancel") } },
         title = { Text("Model for ${session.provider}") },
         text = {
-            Column {
-                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Filter") }, singleLine = true)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FilterField(query) { query = it }
                 if (list?.error != null) {
-                    Text(list.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                    TextButton({ RustBridge.models(session.provider) }) { Text("Retry") }
+                    Column {
+                        Text(list.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        TextButton({ RustBridge.models(session.provider) }) { Text("Retry") }
+                    }
                 }
                 if (list == null || list.loading && list.items.isEmpty()) {
-                    CircularProgressIndicator(Modifier.padding(16.dp).size(24.dp), strokeWidth = 2.dp)
-                }
-                LazyColumn(Modifier.heightIn(max = 400.dp)) {
-                    items(items, key = { it.id }) { m ->
-                        ListItem(
-                            headlineContent = { Text(m.name) },
-                            supportingContent = (m.description.ifEmpty { m.id.takeIf { it != m.name } })?.let { { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis) } },
-                            leadingContent = { Tick(m.id == session.model) },
-                            modifier = Modifier.clickable { onPick(m.id) },
-                        )
-                    }
+                    CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    val entries = items.map { PickerItem(it.id, it.name, it.description.ifEmpty { it.id.takeIf { id -> id != it.name } }, it.id == session.model) }
                     // A model the agent did not list.
-                    if (typed.isNotEmpty() && ' ' !in typed && items.none { it.id == typed }) {
-                        item {
-                            ListItem(headlineContent = { Text("Use “$typed”") }, modifier = Modifier.clickable { onPick(typed) })
-                        }
-                    }
+                    val other = if (typed.isNotEmpty() && ' ' !in typed && items.none { it.id == typed }) listOf(PickerItem(typed, "Use “$typed”")) else emptyList()
+                    PickerList(entries + other, onPick = onPick)
                 }
             }
         },
