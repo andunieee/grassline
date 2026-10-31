@@ -1,7 +1,7 @@
 //! The admin interface itself.
 
 use super::view::{Tree, View};
-use crate::config::SPEECH_PROVIDERS;
+use crate::config::{hostname, SPEECH_PROVIDERS};
 #[cfg(test)]
 use crate::core::random_hex;
 use crate::core::{now_ms, Core};
@@ -353,6 +353,29 @@ impl Admin {
         // ---- admin
         out.element(tab("tab-admin").parent("tabs").label("Admin"));
         out.element(column("admin-body").parent("tab-admin"));
+        out.element(
+            text("a-name-h")
+                .parent("admin-body")
+                .variant("h3")
+                .text("Machine name"),
+        );
+        let hostname = hostname();
+        out.element(
+            text("a-name-help")
+                .parent("admin-body")
+                .variant("caption")
+                .text(format!(
+                    "Shown as grassline@name in hyperb and to paired phones. Empty uses {hostname}."
+                )),
+        );
+        add_row(
+            out,
+            "admin-body",
+            "machine_name",
+            &hostname,
+            "Rename",
+            "set_name",
+        );
         let status = super::HTTP_STATUS.lock().unwrap().clone();
         out.element(
             text("a-http-h")
@@ -612,6 +635,7 @@ impl Admin {
             .collect();
         let mut s = json!({
             "new_root": "", "new_dir": "", "new_key": "",
+            "machine_name": c.name.clone(),
             "http_addr": c.admin_http.addr,
             "bin": bins,
             "stt_key": c.transcription.key,
@@ -645,14 +669,18 @@ fn serde_json_string<T: serde::Serialize>(v: &T) -> String {
     hypereffect::serde_json::to_string(v).unwrap_or_default()
 }
 
+/// What the renderer calls this interface, so that several daemons can be
+/// told apart.
+fn metadata() -> Metadata {
+    Metadata::new()
+        .name(core().config().daemon_name())
+        .description("Runs coding agents for the Grassline app")
+        .icon(ICON)
+}
+
 impl App for Admin {
     fn hello(&mut self, out: &mut Outbox, _: &BTreeMap<String, String>) {
-        out.metadata(
-            Metadata::new()
-                .name("Grassline")
-                .description("Runs coding agents for the Grassline app")
-                .icon(ICON),
-        );
+        out.metadata(metadata());
         out.signal(self.signals());
         self.render(out);
     }
@@ -721,6 +749,13 @@ impl App for Admin {
                     // The listener moves a moment later.
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
+            }
+            "set_name" => {
+                let name = sig(a, "machine_name");
+                core.update_config(|c| c.name = name.clone());
+                out.signal(json!({ "machine_name": name }));
+                out.metadata(metadata());
+                self.flash("Saved");
             }
             "set_iroh" => {
                 let on = a
@@ -832,7 +867,8 @@ mod tests {
         let _ = core.endpoint_id.set("e".repeat(52));
         install(core);
         let mut l = Loopback::<Admin>::new();
-        assert_eq!(l.client.metadata().name.as_deref(), Some("Grassline"));
+        let expected = format!("grassline@{}", super::core().config().machine_name());
+        assert_eq!(l.client.metadata().name.as_deref(), Some(expected.as_str()));
         assert_eq!(l.client.metadata().icon.as_deref(), Some(ICON));
         assert!(l.trigger("pair", "onPress"));
         let src = l.client.attr("ticket-qr", "src").expect("a QR code");
@@ -866,6 +902,20 @@ mod tests {
         assert!(l.trigger("stt-save", "onPress"));
         let t = super::core().config().transcription.resolve().unwrap();
         assert_eq!(t.model, "whisper-large-v3-turbo");
+
+        // The machine can be renamed, and an empty name goes back to the
+        // hostname.
+        l.write("machine_name", json!("Studio"));
+        assert!(l.trigger("machine_name-go", "onPress"));
+        assert_eq!(
+            l.client.metadata().name.as_deref(),
+            Some("grassline@Studio")
+        );
+        assert_eq!(super::core().config().machine_name(), "Studio");
+        l.write("machine_name", json!(""));
+        assert!(l.trigger("machine_name-go", "onPress"));
+        assert_eq!(l.client.metadata().name.as_deref(), Some(expected.as_str()));
+
         assert!(l.client.take_diagnostics().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }

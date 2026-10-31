@@ -21,15 +21,16 @@ pub async fn serve(
         .ok_or("closed before saying anything")??;
 
     let mut pending = None;
+    let name = core.config().daemon_name();
     let refuse = |why: &str| ServerMsg::Hello {
         ok: false,
         error: Some(why.into()),
-        name: hostname(),
+        name: name.clone(),
     };
     let welcome = || ServerMsg::Hello {
         ok: true,
         error: None,
-        name: hostname(),
+        name: name.clone(),
     };
     let hello = if let ClientMsg::Pair { token, name } = &msg {
         if core.is_paired(&key) || core.pair(&key, name, token) {
@@ -240,17 +241,6 @@ async fn handle(
         } => core.decide(&id, &request, decision),
     }
     Ok(())
-}
-
-/// This machine's name.
-fn hostname() -> String {
-    ["/proc/sys/kernel/hostname", "/etc/hostname"]
-        .iter()
-        .find_map(|p| std::fs::read_to_string(p).ok())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "grassline".into())
 }
 
 /// The sessions that are not archived.

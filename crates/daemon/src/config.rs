@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// What the daemon calls itself; empty uses this machine's hostname.
+    pub name: String,
     /// Directories whose subdirectories are projects.
     pub project_roots: Vec<String>,
     /// Directories that are projects themselves.
@@ -117,6 +119,7 @@ pub struct Paired {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            name: String::new(),
             project_roots: vec![],
             project_dirs: vec![],
             default_provider: "claude".into(),
@@ -170,6 +173,20 @@ impl Config {
         std::fs::rename(tmp, path)
     }
 
+    /// The name to show the app and the admin interface: the configured one,
+    /// or this machine's hostname.
+    pub fn machine_name(&self) -> String {
+        match self.name.trim() {
+            "" => hostname(),
+            name => name.into(),
+        }
+    }
+
+    /// What this daemon calls itself: the product and the machine.
+    pub fn daemon_name(&self) -> String {
+        format!("grassline@{}", self.machine_name())
+    }
+
     pub fn options(&self, provider: grassline_agents::Provider) -> grassline_agents::Options {
         grassline_agents::Options {
             binary: self
@@ -180,6 +197,17 @@ impl Config {
             ..Default::default()
         }
     }
+}
+
+/// This machine's name.
+pub fn hostname() -> String {
+    ["/etc/hostname", "/proc/sys/kernel/hostname"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "grassline".into())
 }
 
 fn dir_from_env(var: &str, fallback: &[&str]) -> PathBuf {
@@ -217,6 +245,18 @@ mod tests {
         std::fs::write(&path, r#"{"auto_approve":true,"permissions":"auto"}"#).unwrap();
         assert_eq!(Config::load(&path).permissions, Permissions::Auto);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn name_defaults_to_the_hostname() {
+        let mut c = Config::default();
+        assert_eq!(c.machine_name(), hostname());
+        assert_eq!(c.daemon_name(), format!("grassline@{}", hostname()));
+        c.name = " Studio ".into();
+        assert_eq!(c.machine_name(), "Studio");
+        assert_eq!(c.daemon_name(), "grassline@Studio");
+        c.name = "  ".into();
+        assert_eq!(c.machine_name(), hostname());
     }
 
     #[test]
