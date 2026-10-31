@@ -705,7 +705,7 @@ fun Bubble(sessionId: String, m: ChatMessage) {
             }
         }
         "error" -> SelectionContainer { Text(m.text, color = MaterialTheme.colorScheme.error) }
-        else -> SelectionContainer { Markdown(m.text) }
+        else -> SelectionContainer { Markdown(m.text, components = chatMarkdown) }
     }
 }
 
@@ -767,7 +767,7 @@ fun PermissionCard(sessionId: String, summary: String, t: ToolCall, ask: Ask) {
         Column(Modifier.padding(12.dp)) {
             Text(if (plan != null) "Approve the plan?" else "Allow ${t.name}?", style = MaterialTheme.typography.titleSmall)
             if (plan != null) {
-                Markdown(plan, modifier = Modifier.padding(top = 4.dp))
+                Markdown(plan, modifier = Modifier.padding(top = 4.dp), components = chatMarkdown)
             } else {
                 Text(summary, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.outline)
                 Code(t.input, maxLines = 12)
