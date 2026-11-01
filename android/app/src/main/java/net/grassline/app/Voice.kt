@@ -7,15 +7,23 @@ import android.media.MediaRecorder
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -75,8 +83,9 @@ class VoiceRecorder(private val context: Context) {
     }
 }
 
-/** Turns [audio] into text with an OpenAI-style `audio/transcriptions` endpoint. */
-suspend fun transcribe(t: Transcription, audio: File): String = withContext(Dispatchers.IO) {
+/** Turns [audio] into text with an OpenAI-style `audio/transcriptions` endpoint.
+ *  [onUploaded] tells when the audio is sent and the answer is being waited for. */
+suspend fun transcribe(t: Transcription, audio: File, onUploaded: () -> Unit = {}): String = withContext(Dispatchers.IO) {
     val boundary = "grassline-" + UUID.randomUUID()
     val conn = URL(t.url).openConnection() as HttpURLConnection
     try {
@@ -100,6 +109,7 @@ suspend fun transcribe(t: Transcription, audio: File): String = withContext(Disp
             line()
             line("--$boundary--")
         }
+        onUploaded()
         val code = conn.responseCode
         val body = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
         val json = runCatching { JSONObject(body) }.getOrNull()
@@ -116,10 +126,10 @@ suspend fun transcribe(t: Transcription, audio: File): String = withContext(Disp
     }
 }
 
-enum class VoicePhase { Idle, Recording, Transcribing }
+enum class VoicePhase { Idle, Recording, Uploading, Transcribing }
 
 /** A voice message on its way: recorded, then turned into text for [onText]. */
-class VoiceState(private val context: Context, private val scope: CoroutineScope, private val onText: (String) -> Unit) {
+class VoiceState(private val id: String, private val context: Context, private val scope: CoroutineScope, private val onText: (String) -> Unit) {
     private val recorder = VoiceRecorder(context)
     var phase by mutableStateOf(VoicePhase.Idle)
         private set
@@ -129,6 +139,11 @@ class VoiceState(private val context: Context, private val scope: CoroutineScope
     /** What went wrong last. */
     var error by mutableStateOf<String?>(null)
     internal var askPermission: () -> Unit = {}
+    /** A chat shows it; without one, it is dropped once its upload is over. */
+    internal var shown = false
+
+    /** It is on its way to the agent, so leaving the chat must not drop it. */
+    val busy: Boolean get() = phase == VoicePhase.Uploading || phase == VoicePhase.Transcribing
 
     fun start() {
         error = null
@@ -159,32 +174,53 @@ class VoiceState(private val context: Context, private val scope: CoroutineScope
             error = "nothing was recorded"
             return
         }
-        phase = VoicePhase.Transcribing
+        phase = VoicePhase.Uploading
         scope.launch {
             try {
-                val text = transcribe(t, audio).trim()
+                val text = transcribe(t, audio) {
+                    // The service does its work now: the send button says so.
+                    scope.launch { if (phase == VoicePhase.Uploading) phase = VoicePhase.Transcribing }
+                }.trim()
                 if (text.isEmpty()) error = "no speech was heard" else onText(text)
             } catch (e: Exception) {
                 error = e.message ?: e.toString()
             } finally {
                 audio.delete()
                 phase = VoicePhase.Idle
+                if (!shown) voices.remove(id)
             }
         }
     }
 }
 
+/** Voice messages still on their way, by session: they go on while the app shows other screens. */
+private val voices = HashMap<String, VoiceState>()
+/** Outlives the chat that started an upload. */
+private val voiceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+/** Whether session [id] has a voice message that has not reached the agent yet. */
+fun voiceBusy(id: String): Boolean = voices[id]?.busy == true
+
 @Composable
-fun rememberVoice(onText: (String) -> Unit): VoiceState {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+fun rememberVoice(sessionId: String, onText: (String) -> Unit): VoiceState {
+    val context = LocalContext.current.applicationContext
     val send by rememberUpdatedState(onText)
-    val voice = remember { VoiceState(context, scope) { send(it) } }
+    val voice = remember(sessionId) {
+        voices.getOrPut(sessionId) { VoiceState(sessionId, context, voiceScope) { send(it) } }
+    }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) voice.begin() else voice.error = "Grassline may not use the microphone."
     }
     voice.askPermission = { ask.launch(Manifest.permission.RECORD_AUDIO) }
-    DisposableEffect(Unit) { onDispose { voice.cancel() } }
+    DisposableEffect(sessionId) {
+        voice.shown = true
+        onDispose {
+            voice.cancel()
+            voice.shown = false
+            // An upload that is already going keeps its state until it is there.
+            if (!voice.busy) voices.remove(sessionId)
+        }
+    }
     // A locked phone stops the app from hearing the microphone: keep the screen on while recording.
     val view = LocalView.current
     val recording = voice.phase == VoicePhase.Recording
@@ -193,6 +229,16 @@ fun rememberVoice(onText: (String) -> Unit): VoiceState {
         onDispose { view.keepScreenOn = false }
     }
     return voice
+}
+
+/** A spinner and what it waits for, in place of the send button. */
+@Composable
+fun BusyLabel(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.labelLarge)
+    }
 }
 
 /** How long it has been recording, as m:ss. */

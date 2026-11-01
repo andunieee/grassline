@@ -122,7 +122,13 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
     val session = (state.sessions + state.archived.orEmpty()).firstOrNull { it.id == current }
     val open = { s: SessionInfo -> RustBridge.open(s.id); current = s.id }
     if (session != null) {
-        val leave = { RustBridge.close(session.id); current = null }
+        val leave = {
+            // A voice message that is still uploading is not a message yet:
+            // closing an empty session would delete it before it is sent.
+            val unsent = voiceBusy(session.id) && state.messages[session.id].isNullOrEmpty() && session.queue.isEmpty()
+            if (!unsent) RustBridge.close(session.id)
+            current = null
+        }
         BackHandler(onBack = leave)
         ChatScreen(state, session, onBack = leave)
     } else if (archive) {
@@ -514,7 +520,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     val messages = state.messages[session.id].orEmpty()
     var draft by remember { mutableStateOf("") }
     // A voice message goes out as text once it is transcribed.
-    val voice = rememberVoice { RustBridge.send(session.id, it) }
+    val voice = rememberVoice(session.id) { RustBridge.send(session.id, it) }
     var agentMenu by remember { mutableStateOf(false) }
     // The agent to switch to, once the user confirms.
     var switchTo by remember { mutableStateOf<String?>(null) }
@@ -589,10 +595,10 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             draft, { draft = it }, Modifier.weight(1f),
                             placeholder = {
                                 Text(
-                                    when {
-                                        voice.phase == VoicePhase.Transcribing -> "Transcribing…"
-                                        session.running -> "Queue a message"
-                                        else -> "Message"
+                                    when (voice.phase) {
+                                        VoicePhase.Uploading -> "Uploading…"
+                                        VoicePhase.Transcribing -> "Transcribing…"
+                                        else -> if (session.running) "Queue a message" else "Message"
                                     },
                                 )
                             },
@@ -605,7 +611,8 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                             onClick = { state.transcription?.let(voice::finish) ?: voice.cancel() },
                             enabled = state.status == "connected",
                         ) { Text("Send") }
-                        voice.phase == VoicePhase.Transcribing -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        voice.phase == VoicePhase.Uploading -> BusyLabel("Uploading…")
+                        voice.phase == VoicePhase.Transcribing -> BusyLabel("Transcribing…")
                         // A voice message sent now waits in the queue.
                         session.running && draft.isBlank() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (state.transcription != null) FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
