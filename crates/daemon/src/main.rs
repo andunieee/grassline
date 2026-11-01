@@ -11,26 +11,27 @@ mod iroh;
 mod lines;
 mod version;
 
+use clap::Parser;
 use hyperb::Identity;
+use std::path::PathBuf;
+
+/// The daemon behind Grassline: runs coding agents on this machine and offers
+/// them to remote controllers over iroh.
+///
+/// Settings and the iroh key live in the config directory (default
+/// ~/.config/grassline); sessions in ~/.local/share/grassline.
+#[derive(Parser)]
+#[command(name = "grasslined", version = version::full())]
+struct Args {
+    /// Where settings and the iroh key live (default ~/.config/grassline)
+    #[arg(long, value_name = "DIR")]
+    config_dir: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args().skip(1);
-    let config_dir = match (args.next().as_deref(), args.next()) {
-        (Some("--version" | "-V"), _) => {
-            println!("grasslined {}", version::full());
-            return;
-        }
-        (Some("--help" | "-h"), _) => {
-            println!(
-                "grasslined {}\nusage: grasslined [--config-dir DIR]\nsettings and the iroh key live in DIR (default ~/.config/grassline); sessions in ~/.local/share/grassline",
-                version::full()
-            );
-            return;
-        }
-        (Some("--config-dir"), Some(d)) => d.into(),
-        _ => config::config_dir(),
-    };
+    let args = Args::parse();
+    let config_dir = args.config_dir.unwrap_or_else(config::config_dir);
     println!("grasslined {}", version::full());
     let data_dir = std::env::var_os("GRASSLINE_DATA_DIR")
         .map(Into::into)

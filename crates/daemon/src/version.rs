@@ -26,17 +26,20 @@ fn format(tag: Option<&str>, count: u64, commit: Option<&str>, dirty: bool, debu
 }
 
 /// The version to show at startup and with `--version`.
-pub fn full() -> String {
-    let count = option_env!("GRASSLINE_GIT_COUNT")
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0);
-    format(
-        option_env!("GRASSLINE_GIT_TAG"),
-        count,
-        option_env!("GRASSLINE_GIT_COMMIT"),
-        option_env!("GRASSLINE_GIT_DIRTY") == Some("1"),
-        cfg!(debug_assertions),
-    )
+pub fn full() -> &'static str {
+    static FULL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FULL.get_or_init(|| {
+        let count = option_env!("GRASSLINE_GIT_COUNT")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        format(
+            option_env!("GRASSLINE_GIT_TAG"),
+            count,
+            option_env!("GRASSLINE_GIT_COMMIT"),
+            option_env!("GRASSLINE_GIT_DIRTY") == Some("1"),
+            cfg!(debug_assertions),
+        )
+    })
 }
 
 #[cfg(test)]
