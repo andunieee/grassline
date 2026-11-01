@@ -9,6 +9,7 @@ mod core;
 mod hyperb;
 mod iroh;
 mod lines;
+mod version;
 
 use hyperb::Identity;
 
@@ -16,13 +17,21 @@ use hyperb::Identity;
 async fn main() {
     let mut args = std::env::args().skip(1);
     let config_dir = match (args.next().as_deref(), args.next()) {
-        (Some("--config-dir"), Some(d)) => d.into(),
-        (Some("--help" | "-h"), _) => {
-            println!("usage: grasslined [--config-dir DIR]\nsettings and the iroh key live in DIR (default ~/.config/grassline); sessions in ~/.local/share/grassline");
+        (Some("--version" | "-V"), _) => {
+            println!("grasslined {}", version::full());
             return;
         }
+        (Some("--help" | "-h"), _) => {
+            println!(
+                "grasslined {}\nusage: grasslined [--config-dir DIR]\nsettings and the iroh key live in DIR (default ~/.config/grassline); sessions in ~/.local/share/grassline",
+                version::full()
+            );
+            return;
+        }
+        (Some("--config-dir"), Some(d)) => d.into(),
         _ => config::config_dir(),
     };
+    println!("grasslined {}", version::full());
     let data_dir = std::env::var_os("GRASSLINE_DATA_DIR")
         .map(Into::into)
         .unwrap_or_else(config::data_dir);
