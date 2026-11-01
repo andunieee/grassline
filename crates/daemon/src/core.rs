@@ -120,10 +120,7 @@ impl Core {
                             q.steering = false;
                         }
                         settle_tools(&mut s.messages);
-                        if let Some(m) = s.messages.iter().rev().find(|m| m.role == Role::Assistant)
-                        {
-                            s.info.preview = first_line(&m.text);
-                        }
+                        s.info.preview = preview_of(&s.messages);
                         sessions.insert(s.info.id.clone(), s);
                     }
                     Err(e2) => eprintln!("{}: {e2}", e.path().display()),
@@ -613,8 +610,8 @@ impl Core {
             let now = now_ms();
             let index = f(s, now)?;
             s.info.updated = now;
-            if s.messages[index].role == Role::Assistant {
-                s.info.preview = first_line(&s.messages[index].text);
+            if matches!(s.messages[index].role, Role::User | Role::Assistant) {
+                s.info.preview = preview_of(&s.messages);
             }
             (s.info.clone(), index, s.messages[index].clone())
         };
@@ -1121,6 +1118,17 @@ fn pretty(v: &serde_json::Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
+/// The start of the last message the user or an agent wrote.
+fn preview_of(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| matches!(m.role, Role::User | Role::Assistant))
+        .map(|m| first_line(&m.text))
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+}
+
 /// The first line with text, in at most 80 characters.
 fn first_line(text: &str) -> String {
     let line = text.lines().map(str::trim).find(|l| !l.is_empty());
@@ -1389,6 +1397,44 @@ while True:
         core.send(&id, "one").unwrap();
         assert!(!info(&core, &id).archived);
         until("the answer", || !info(&core, &id).running).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_preview_follows_the_last_message() {
+        let (core, id, dir) = core("preview");
+        core.send(&id, "first").unwrap();
+        until("the answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).preview, "first");
+
+        // The user's message shows while the agent works on its answer.
+        core.send(&id, "second").unwrap();
+        assert_eq!(info(&core, &id).preview, "second");
+        until("the next answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).preview, "second");
+
+        // Tool calls and errors are not what the conversation is about.
+        let messages = vec![
+            Message {
+                role: Role::User,
+                text: "third".into(),
+                ts: 0,
+                tool: None,
+            },
+            Message {
+                role: Role::Tool,
+                text: "ran ls".into(),
+                ts: 0,
+                tool: None,
+            },
+            Message {
+                role: Role::Error,
+                text: "stopped".into(),
+                ts: 0,
+                tool: None,
+            },
+        ];
+        assert_eq!(preview_of(&messages), "third");
         let _ = std::fs::remove_dir_all(dir);
     }
 
