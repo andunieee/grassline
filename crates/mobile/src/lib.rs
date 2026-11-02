@@ -51,7 +51,7 @@ struct State {
     transcription: Option<Transcription>,
     /// The models of the agents they were asked for, by provider name.
     models: HashMap<String, Models>,
-    /// The messages of the sessions that were opened.
+    /// The messages of the sessions that are open.
     messages: HashMap<String, Vec<Message>>,
     /// The last error the daemon reported.
     error: Option<String>,
@@ -128,6 +128,9 @@ struct Shared {
     changed: Condvar,
     out: Mutex<Option<mpsc::UnboundedSender<ClientMsg>>>,
     opened: Mutex<HashSet<String>>,
+    /// The sessions that were left: what the daemon still sends for them on its
+    /// way to seeing the close is dropped, so they stay out of memory.
+    left: Mutex<HashSet<String>>,
 }
 
 impl Shared {
@@ -154,6 +157,18 @@ impl Shared {
         };
         self.edit(|_| {});
         r
+    }
+
+    /// Stops keeping session `id` open and its messages: opening it asks for
+    /// them again.
+    fn close_session(&self, id: &str) {
+        self.opened.lock().unwrap().remove(id);
+        self.left.lock().unwrap().insert(id.into());
+        if self.state.lock().unwrap().messages.contains_key(id) {
+            self.edit(|s| {
+                s.messages.remove(id);
+            });
+        }
     }
 }
 
@@ -185,6 +200,7 @@ impl Controller {
                 changed: Condvar::new(),
                 out: Mutex::new(None),
                 opened: Mutex::new(HashSet::new()),
+                left: Mutex::new(HashSet::new()),
             }),
             rt,
             conn_task: Mutex::new(None),
@@ -254,6 +270,7 @@ impl Controller {
     fn forget(&self) {
         *self.shared.out.lock().unwrap() = None;
         self.shared.opened.lock().unwrap().clear();
+        self.shared.left.lock().unwrap().clear();
         self.shared.edit(|s| {
             *s = State {
                 version: s.version,
@@ -368,18 +385,19 @@ impl Controller {
 
     /// Deletes a session from the daemon, with its stored messages.
     pub fn delete(&self, id: &str) {
-        self.shared.opened.lock().unwrap().remove(id);
+        self.shared.close_session(id);
         self.send(ClientMsg::Delete { id: id.into() });
     }
 
     pub fn open(&self, id: &str) {
+        self.shared.left.lock().unwrap().remove(id);
         self.shared.opened.lock().unwrap().insert(id.into());
         self.send(ClientMsg::Open { id: id.into() });
     }
 
     /// Leaves a session; the daemon deletes it when nothing was sent to it.
     pub fn close(&self, id: &str) {
-        self.shared.opened.lock().unwrap().remove(id);
+        self.shared.close_session(id);
         self.send(ClientMsg::Close { id: id.into() });
     }
 
@@ -624,7 +642,15 @@ async fn talk(
 fn apply(shared: &Shared, msg: ServerMsg) {
     if let ServerMsg::Removed { id } = &msg {
         shared.opened.lock().unwrap().remove(id);
+        shared.left.lock().unwrap().remove(id);
     }
+    // The chat was left before the daemon saw its close: keep none of it.
+    let keep = match &msg {
+        ServerMsg::History { id, .. } | ServerMsg::Msg { id, .. } => {
+            !shared.left.lock().unwrap().contains(id)
+        }
+        _ => true,
+    };
     shared.edit(|s| match msg {
         ServerMsg::Hello { .. } => {}
         ServerMsg::Projects { items, roots } => {
@@ -677,16 +703,20 @@ fn apply(shared: &Shared, msg: ServerMsg) {
             s.messages.remove(&id);
         }
         ServerMsg::History { id, messages } => {
-            s.messages.insert(id, messages);
+            if keep {
+                s.messages.insert(id, messages);
+            }
         }
         ServerMsg::Msg { id, index, message } => {
-            let list = s.messages.entry(id).or_default();
-            if index < list.len() {
-                list[index] = message;
-            } else if index == list.len() {
-                list.push(message);
+            if keep {
+                let list = s.messages.entry(id).or_default();
+                if index < list.len() {
+                    list[index] = message;
+                } else if index == list.len() {
+                    list.push(message);
+                }
+                // A gap means we missed some; the daemon resends the history on a reconnect.
             }
-            // A gap means we missed some; the daemon resends the history on a reconnect.
         }
         ServerMsg::Error { message } => s.error = Some(message),
     });
@@ -709,5 +739,61 @@ mod tests {
         }
         assert!(!dir.join("daemon.json").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn leaving_a_session_drops_its_messages() {
+        let shared = Shared {
+            dir: std::env::temp_dir(),
+            state: Mutex::new(State::default()),
+            saved: Mutex::new(Saved::default()),
+            changed: Condvar::new(),
+            out: Mutex::new(None),
+            opened: Mutex::new(HashSet::new()),
+            left: Mutex::new(HashSet::new()),
+        };
+        let message = |text: &str| Message {
+            role: grassline_proto::Role::User,
+            text: text.into(),
+            ts: 0,
+            tool: None,
+        };
+
+        // Opening a session brings its history in.
+        shared.opened.lock().unwrap().insert("a".into());
+        apply(
+            &shared,
+            ServerMsg::History {
+                id: "a".into(),
+                messages: vec![message("one")],
+            },
+        );
+        assert_eq!(shared.state.lock().unwrap().messages["a"].len(), 1);
+
+        // Leaving it drops them; what the daemon still sends meanwhile does
+        // not bring them back.
+        shared.close_session("a");
+        assert!(!shared.state.lock().unwrap().messages.contains_key("a"));
+        apply(
+            &shared,
+            ServerMsg::Msg {
+                id: "a".into(),
+                index: 0,
+                message: message("two"),
+            },
+        );
+        assert!(!shared.state.lock().unwrap().messages.contains_key("a"));
+
+        // Opening it again gets the history again.
+        shared.left.lock().unwrap().remove("a");
+        shared.opened.lock().unwrap().insert("a".into());
+        apply(
+            &shared,
+            ServerMsg::History {
+                id: "a".into(),
+                messages: vec![message("one"), message("two")],
+            },
+        );
+        assert_eq!(shared.state.lock().unwrap().messages["a"].len(), 2);
     }
 }
