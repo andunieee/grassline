@@ -432,6 +432,17 @@ impl Core {
         v
     }
 
+    /// The provider's own id for each session's conversation, by session
+    /// id, for the sessions that have one.
+    pub fn provider_sessions(&self) -> HashMap<String, String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, s)| Some((id.clone(), s.provider_session.clone()?)))
+            .collect()
+    }
+
     pub fn messages(&self, id: &str) -> Option<Vec<Message>> {
         self.sessions
             .lock()
@@ -1406,6 +1417,16 @@ while True:
         core.send(&id, "one").unwrap();
         assert!(!info(&core, &id).archived);
         until("the answer", || !info(&core, &id).running).await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_provider_session_is_known_after_a_turn() {
+        let (core, id, dir) = core("provider-session");
+        assert!(core.provider_sessions().is_empty());
+        core.send(&id, "one").unwrap();
+        until("the answer", || !info(&core, &id).running).await;
+        assert_eq!(core.provider_sessions().get(&id).map(String::as_str), Some("s1"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

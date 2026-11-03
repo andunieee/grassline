@@ -103,22 +103,52 @@ impl Admin {
     /// minute is in it because the relative times change with it.
     fn sessions_snapshot() -> String {
         let sessions = core().sessions();
+        let resume = core().provider_sessions();
         let rows: Vec<_> = sessions
             .iter()
-            .map(|s| (&s.id, ago(s.updated), s.running, &s.title, &s.provider))
+            .map(|s| {
+                let when = ago(s.updated);
+                let resume = resume.get(&s.id);
+                (
+                    &s.id,
+                    when,
+                    s.running,
+                    s.archived,
+                    &s.title,
+                    &s.provider,
+                    resume,
+                )
+            })
             .collect();
         serde_json_string(&rows)
     }
 
+    /// The sessions, with the archived ones hidden until asked for: the
+    /// renderer shows them by itself, from the `show_archived` signal.
     fn sessions() -> Node {
         let sessions = core().sessions();
-        let none = sessions.is_empty().then(|| {
-            caption(
+        let resume = core().provider_sessions();
+        let archived = sessions.iter().filter(|s| s.archived).count();
+        let toggle = (archived > 0).then(|| {
+            checkbox("show-archived")
+                .variant("switch")
+                .label(format!("Show archived sessions ({archived})"))
+                .bind("show_archived")
+        });
+        let none = if sessions.is_empty() {
+            Some(caption(
                 "sessions-none",
                 "No sessions yet. Sessions are started from the remote controller.",
+            ))
+        } else if archived == sessions.len() {
+            Some(
+                caption("sessions-none", "Every session is archived.")
+                    .visible(cel("!s.show_archived")),
             )
-        });
-        column("sessions-body")
+        } else {
+            None
+        };
+        let body = column("sessions-body")
             .children(none)
             .children(sessions.iter().map(|s| {
                 let id = format!("s-{}", s.id);
@@ -132,7 +162,28 @@ impl Admin {
                         .label("Stop")
                         .on_press(Handler::action("stop").payload(s.id.as_str()))
                 });
-                card(id.as_str()).children([
+                let mut when = format!("{} · {} · {}", s.id, s.path, ago(s.updated));
+                if s.archived {
+                    when.push_str(" · archived");
+                }
+                // How to go on with the conversation in a terminal, from the
+                // session's directory.
+                let resume = resume.get(&s.id).map(|sid| {
+                    let command = match s.provider.as_str() {
+                        "claude" => format!("claude --resume {sid}"),
+                        "opencode" => format!("opencode --session {sid}"),
+                        "codex" => format!("codex resume {sid}"),
+                        other => format!("{other} session: {sid}"),
+                    };
+                    text(format!("{id}-resume")).variant("code").text(command)
+                });
+                let card = card(id.as_str());
+                let card = if s.archived {
+                    card.visible(cel("s.show_archived"))
+                } else {
+                    card
+                };
+                card.children([
                     row(format!("{id}-head")).justify("between").children([
                         text(format!("{id}-name"))
                             .variant("h3")
@@ -146,10 +197,10 @@ impl Admin {
                             }),
                     ]),
                     text(format!("{id}-title")).text(line),
-                    caption(
-                        &format!("{id}-when"),
-                        format!("{} · {} · {}", s.id, s.path, ago(s.updated)),
-                    ),
+                    caption(&format!("{id}-when"), when),
+                ])
+                .children(resume)
+                .child(
                     row(format!("{id}-btns"))
                         .justify("end")
                         .children(stop)
@@ -159,8 +210,12 @@ impl Admin {
                                 .label("Delete")
                                 .on_press(Handler::action("delete").payload(s.id.as_str())),
                         ),
-                ])
-            }))
+                )
+            }));
+        column("sessions")
+            .child(heading("sessions-h", "Sessions"))
+            .children(toggle)
+            .child(body)
     }
 
     /// Sends what changed since the last time.
@@ -233,9 +288,7 @@ impl Admin {
                 .children(ticket)
                 .child(heading("m-dev-h", "Paired devices"))
                 .child(list("devices").empty("No devices.").children(devices)),
-            column("sessions")
-                .child(heading("sessions-h", "Sessions"))
-                .child(Self::sessions()),
+            Self::sessions(),
         ])
     }
 
@@ -499,6 +552,7 @@ impl Admin {
             .collect();
         let mut s = json!({
             "new_root": "", "new_dir": "", "new_key": "",
+            "show_archived": false,
             "machine_name": c.name.clone(),
             "http_addr": c.admin_http.addr,
             "bin": bins,
@@ -776,6 +830,21 @@ mod tests {
         l.write("machine_name", json!(""));
         assert!(l.trigger("machine_name-go", "onPress"));
         assert_eq!(l.client.metadata().name.as_deref(), Some(expected.as_str()));
+
+        // Archived sessions are hidden until asked for.
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let project = project.to_string_lossy().to_string();
+        super::core().update_config(|c| c.project_dirs = vec![project.clone()]);
+        let kept = super::core().create_session(&project, None).unwrap().id;
+        let gone = super::core().create_session(&project, None).unwrap().id;
+        super::core().set_archived(&gone, true).unwrap();
+        l.tick(now_ms() as f64);
+        let visible = |l: &Loopback<Admin>, id: &str| l.client.attr(&format!("s-{id}"), "visible");
+        assert_eq!(visible(&l, &kept), Some(json!(true)));
+        assert_eq!(visible(&l, &gone), Some(json!(false)));
+        l.write("show_archived", json!(true));
+        assert_eq!(visible(&l, &gone), Some(json!(true)));
 
         assert!(l.client.take_diagnostics().is_empty());
         let _ = std::fs::remove_dir_all(dir);
