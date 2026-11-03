@@ -266,7 +266,9 @@ impl Core {
         }
         let dir = expand(root).join(name);
         std::fs::create_dir(&dir).map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => format!("there is already a project named “{name}”"),
+            std::io::ErrorKind::AlreadyExists => {
+                format!("there is already a project named “{name}”")
+            }
             _ => format!("could not make {}: {e}", dir.display()),
         })?;
         let _ = self.updates.send(Update::Projects);
@@ -496,9 +498,10 @@ impl Core {
 
     /// Deletes session `id` when nothing was ever sent to it.
     pub fn delete_if_unused(&self, id: &str) {
-        let unused = self.sessions.lock().unwrap().get(id).is_some_and(|s| {
-            s.messages.is_empty() && s.info.queue.is_empty() && !s.info.running
-        });
+        let unused =
+            self.sessions.lock().unwrap().get(id).is_some_and(|s| {
+                s.messages.is_empty() && s.info.queue.is_empty() && !s.info.running
+            });
         if unused {
             self.delete_session(id);
         }
@@ -1289,10 +1292,16 @@ while True:
 
         let path = core.create_project(&root, " fresh ").unwrap();
         assert!(Path::new(&path).is_dir());
-        assert!(core.projects().iter().any(|p| p.name == "fresh" && p.path == path));
+        assert!(core
+            .projects()
+            .iter()
+            .any(|p| p.name == "fresh" && p.path == path));
         assert!(core.create_session(&path, Some("claude")).is_ok());
 
-        assert!(core.create_project(&root, "fresh").unwrap_err().contains("already"));
+        assert!(core
+            .create_project(&root, "fresh")
+            .unwrap_err()
+            .contains("already"));
         for bad in ["", ".hidden", "a/b", "../up"] {
             assert!(core.create_project(&root, bad).is_err(), "{bad}");
         }

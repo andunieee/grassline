@@ -58,18 +58,10 @@ pub async fn serve(
     let mut opened = HashSet::<String>::new();
     // Answers that take a while, like the models.
     let (later, mut late) = mpsc::unbounded_channel::<ServerMsg>();
-    write(
-        &mut send,
-        &projects(&core),
-    )
-    .await?;
+    write(&mut send, &projects(&core)).await?;
     write(&mut send, &agents(&core)).await?;
     write(&mut send, &transcription(&core)).await?;
-    write(
-        &mut send,
-        &sessions(&core),
-    )
-    .await?;
+    write(&mut send, &sessions(&core)).await?;
     if let Some(m) = pending {
         handle(&core, &mut send, &mut opened, &later, m).await?;
     }
@@ -138,18 +130,10 @@ async fn handle(
     match msg {
         ClientMsg::Pair { .. } => {}
         ClientMsg::Refresh => {
-            write(
-                send,
-                &projects(core),
-            )
-            .await?;
+            write(send, &projects(core)).await?;
             write(send, &agents(core)).await?;
             write(send, &transcription(core)).await?;
-            write(
-                send,
-                &sessions(core),
-            )
-            .await?;
+            write(send, &sessions(core)).await?;
         }
         // The settings change announces the new default.
         ClientMsg::SetDefaultAgent { provider } => {
@@ -278,7 +262,11 @@ async fn handle(
 /// The sessions that are not archived.
 fn sessions(core: &Core) -> ServerMsg {
     ServerMsg::Sessions {
-        items: core.sessions().into_iter().filter(|s| !s.archived).collect(),
+        items: core
+            .sessions()
+            .into_iter()
+            .filter(|s| !s.archived)
+            .collect(),
     }
 }
 

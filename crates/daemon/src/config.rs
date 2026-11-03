@@ -202,12 +202,7 @@ impl Config {
     }
 
     /// Remembers the mode picked with a model.
-    pub fn remember_permissions(
-        &mut self,
-        provider: &str,
-        model: &str,
-        permissions: Permissions,
-    ) {
+    pub fn remember_permissions(&mut self, provider: &str, model: &str, permissions: Permissions) {
         self.model_permissions
             .insert(model_key(provider, model), permissions);
     }
