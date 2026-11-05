@@ -36,13 +36,105 @@ The daemon on your computer is headless, but it can be configured from a dashboa
 
 ## Getting started
 
-```
-just daemon-install    # install the daemon as a systemd user service
-just android           # build the app and install it on connected phones
+Grassline has two parts: the `grasslined` daemon, which runs on the computer where your agents
+live, and the Android app. Both are attached to every
+[GitHub release](https://github.com/andunieee/grassline/releases/latest):
+
+- `.deb` for Debian, Ubuntu and derivatives
+- `.rpm` for Fedora, openSUSE and derivatives
+- `.pkg.tar.zst` for Arch Linux
+- a `.tar.gz` with a single binary, for everything else (Linux x86_64 and aarch64, macOS)
+- the `.apk` for the phone
+
+The daemon is meant to run as a systemd user service, with the unit in
+[`deploy/grasslined.service`](deploy/grasslined.service). The packages and the tarball ship it.
+
+Once the daemon is running, install the app on your phone, open the admin panel and pair them.
+
+## Daemon
+
+Each snippet installs the latest release and starts the daemon as a user service.
+
+<details>
+<summary>Debian / Ubuntu (.deb)</summary>
+
+```bash
+v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
+curl -fLO "https://github.com/andunieee/grassline/releases/download/v$v/grasslined_${v}_$(dpkg --print-architecture).deb"
+sudo apt install "./grasslined_${v}_$(dpkg --print-architecture).deb"
+systemctl --user enable --now grasslined
 ```
 
-Open `hyperb://127.0.0.1:7878/`, go to **Access**, press **New pairing code**, and scan it with the
-app. Then add your projects under **Projects** and start a session from the phone.
+</details>
+
+<details>
+<summary>Fedora / openSUSE (.rpm)</summary>
+
+```bash
+v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
+sudo dnf install "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1.$(uname -m).rpm"
+systemctl --user enable --now grasslined
+```
+
+</details>
+
+<details>
+<summary>Arch Linux (.pkg.tar.zst)</summary>
+
+```bash
+v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
+sudo pacman -U "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1-$(uname -m).pkg.tar.zst"
+systemctl --user enable --now grasslined
+```
+
+</details>
+
+<details>
+<summary>Single binary (any Linux with systemd)</summary>
+
+```bash
+v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
+name="grasslined-$v-$(uname -m)-unknown-linux-gnu"
+curl -fL "https://github.com/andunieee/grassline/releases/download/v$v/$name.tar.gz" | tar -xz
+install -Dm755 "$name/grasslined" ~/.local/bin/grasslined
+sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/grasslined|' "$name/grasslined.service" \
+  | install -Dm644 /dev/stdin ~/.config/systemd/user/grasslined.service
+rm -rf "$name"
+systemctl --user daemon-reload
+systemctl --user enable --now grasslined
+```
+
+</details>
+
+<details>
+<summary>From source</summary>
+
+```bash
+git clone https://github.com/andunieee/grassline
+cd grassline
+just daemon-install
+```
+
+</details>
+
+Check that it is running with `systemctl --user status grasslined`, and follow its logs with
+`journalctl --user -u grasslined -f`. To keep it running while you are logged out, run
+`sudo loginctl enable-linger $USER`.
+
+## App
+
+Download the latest
+[`grassline-<version>.apk`](https://github.com/andunieee/grassline/releases/latest) from the
+releases page on your phone and open it to install (Android will ask you to allow installs from
+your browser). To build it yourself and install it on phones connected through adb, run
+`just android`.
+
+## Admin panel
+
+The admin panel is served by the daemon and is opened with [hyperb](https://github.com/andunieee/hyperb).
+With hyperb installed, open `hyperb://127.0.0.1:7878/`, go to **Access**, press
+**New pairing code**, and scan it with the app. Then add your projects under **Projects** and
+start a session from the phone.
 
 ## Releases
 
