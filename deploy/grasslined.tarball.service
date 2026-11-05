@@ -1,0 +1,14 @@
+[Unit]
+Description=Grassline daemon: headless coding agents, controllable remotely
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/grasslined
+Restart=on-failure
+RestartSec=3
+# Agents are found through PATH: add the directories of claude, opencode and codex.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/.bun/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin
+
+[Install]
+WantedBy=default.target

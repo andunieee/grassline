@@ -43,17 +43,21 @@ live, and the Android app. Both are attached to every
 - `.deb` for Debian, Ubuntu and derivatives
 - `.rpm` for Fedora, openSUSE and derivatives
 - `.pkg.tar.zst` for Arch Linux
-- a `.tar.gz` with a single binary, for everything else (Linux x86_64 and aarch64, macOS)
+- a `.tar.gz` with the binary, for everything else (Linux x86_64 and aarch64, macOS)
 - the `.apk` for the phone
 
-The daemon is meant to run as a systemd user service, with the unit in
-[`deploy/grasslined.service`](deploy/grasslined.service). The packages and the tarball ship it.
+On Linux the daemon runs as a systemd user service. The packages install a unit in
+`/usr/lib/systemd/user/` that starts `/usr/bin/grasslined`, and the Linux tarballs include one
+that starts `~/.local/bin/grasslined`. `just daemon-install` uses
+[`deploy/grasslined.service`](deploy/grasslined.service) for a `cargo install`. On macOS there
+is no systemd: extract the tarball and run `grasslined` directly.
 
 Once the daemon is running, install the app on your phone, open the admin panel and pair them.
 
 ## Daemon
 
-Each snippet installs the latest release and starts the daemon as a user service.
+Each snippet installs the latest release and starts the daemon as a user service. They are
+bash: in fish, run them through `bash -c '…'` or from a bash shell.
 
 <details>
 <summary>Debian / Ubuntu (.deb)</summary>
@@ -62,6 +66,7 @@ Each snippet installs the latest release and starts the daemon as a user service
 v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
 curl -fLO "https://github.com/andunieee/grassline/releases/download/v$v/grasslined_${v}_$(dpkg --print-architecture).deb"
 sudo apt install "./grasslined_${v}_$(dpkg --print-architecture).deb"
+systemctl --user daemon-reload
 systemctl --user enable --now grasslined
 ```
 
@@ -73,6 +78,7 @@ systemctl --user enable --now grasslined
 ```bash
 v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
 sudo dnf install "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1.$(uname -m).rpm"
+systemctl --user daemon-reload
 systemctl --user enable --now grasslined
 ```
 
@@ -84,6 +90,7 @@ systemctl --user enable --now grasslined
 ```bash
 v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
 sudo pacman -U "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1-$(uname -m).pkg.tar.zst"
+systemctl --user daemon-reload
 systemctl --user enable --now grasslined
 ```
 
@@ -97,8 +104,7 @@ v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest 
 name="grasslined-$v-$(uname -m)-unknown-linux-gnu"
 curl -fL "https://github.com/andunieee/grassline/releases/download/v$v/$name.tar.gz" | tar -xz
 install -Dm755 "$name/grasslined" ~/.local/bin/grasslined
-sed 's|^ExecStart=.*|ExecStart=%h/.local/bin/grasslined|' "$name/grasslined.service" \
-  | install -Dm644 /dev/stdin ~/.config/systemd/user/grasslined.service
+install -Dm644 "$name/grasslined.service" ~/.config/systemd/user/grasslined.service
 rm -rf "$name"
 systemctl --user daemon-reload
 systemctl --user enable --now grasslined
@@ -146,8 +152,10 @@ git push origin v0.1.0
 ```
 
 The release workflow builds `grasslined` for Linux (x86_64 and aarch64) and macOS (Apple
-Silicon and Intel), packages each with the systemd unit and this README, and builds the
-release APK. All of it is attached to the GitHub release for the tag.
+Silicon and Intel). The Linux builds are published as tarballs and as `.deb`, `.rpm` and
+`.pkg.tar.zst` packages; the macOS builds as tarballs. Each archive contains the binary and
+this README, and the Linux ones also contain a systemd user unit. The workflow builds the
+release APK too. All of it is attached to the GitHub release for the tag.
 
 The APK is signed with the debug key unless these repository secrets are set:
 `ANDROID_KEYSTORE_BASE64` (the base64 of a `.jks` file), `ANDROID_KEYSTORE_PASSWORD`,

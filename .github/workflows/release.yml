@@ -58,7 +58,9 @@ jobs:
           name="grasslined-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/grasslined" "dist/$name/"
-          cp deploy/grasslined.service "dist/$name/"
+          if [[ "${{ matrix.target }}" == *-linux-gnu ]]; then
+            cp deploy/grasslined.tarball.service "dist/$name/grasslined.service"
+          fi
           cp README.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -rf "dist/$name"
@@ -68,6 +70,140 @@ jobs:
         with:
           name: daemon-${{ matrix.target }}
           path: dist/*
+          if-no-files-found: error
+
+  packages:
+    name: packages (${{ matrix.target }})
+    needs: daemon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            rpm_arch: x86_64
+            pacman_arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            rpm_arch: aarch64
+            pacman_arch: aarch64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: daemon-${{ matrix.target }}
+          path: dist
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y rpm zstd
+
+      - name: Build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="grasslined-${version}-${{ matrix.target }}"
+          tar -xzf "dist/$name.tar.gz" -C dist
+          unit="deploy/grasslined.package.service"
+
+          # Debian package
+          deb_root="$(mktemp -d)"
+          install -Dm755 "dist/$name/grasslined" "$deb_root/usr/bin/grasslined"
+          install -Dm644 "$unit" "$deb_root/usr/lib/systemd/user/grasslined.service"
+          install -Dm644 README.md "$deb_root/usr/share/doc/grasslined/README.md"
+          mkdir -p "$deb_root/DEBIAN"
+          cat > "$deb_root/DEBIAN/control" <<EOF
+          Package: grasslined
+          Version: ${version}
+          Architecture: ${{ matrix.deb_arch }}
+          Maintainer: andunie <andunie@cassis.cash>
+          Installed-Size: $(du -sk "$deb_root/usr" | cut -f1)
+          Section: utils
+          Priority: optional
+          Homepage: https://github.com/andunieee/grassline
+          Description: Headless daemon for controlling coding agents remotely
+          EOF
+          dpkg-deb --build --root-owner-group "$deb_root" \
+            "dist/grasslined_${version}_${{ matrix.deb_arch }}.deb"
+          rm -rf "$deb_root"
+
+          # RPM package
+          rpm_top="$(mktemp -d)"
+          mkdir -p "$rpm_top"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          cat > "$rpm_top/SPECS/grasslined.spec" <<EOF
+          Name: grasslined
+          Version: ${version}
+          Release: 1
+          Summary: Headless daemon for controlling coding agents remotely
+          License: MIT OR Apache-2.0
+          URL: https://github.com/andunieee/grassline
+          AutoReqProv: no
+          %global debug_package %{nil}
+          %global __os_install_post %{nil}
+
+          %description
+          Grassline runs Claude Code, opencode, Codex and others on your own computer
+          and lets you talk to them from your phone over iroh.
+
+          %install
+          install -Dm755 "$PWD/dist/$name/grasslined" %{buildroot}/usr/bin/grasslined
+          install -Dm644 "$PWD/$unit" %{buildroot}/usr/lib/systemd/user/grasslined.service
+          install -Dm644 "$PWD/README.md" %{buildroot}/usr/share/doc/grasslined/README.md
+
+          %files
+          /usr/bin/grasslined
+          /usr/lib/systemd/user/grasslined.service
+          /usr/share/doc/grasslined/README.md
+          EOF
+          rpmbuild -bb --target "${{ matrix.rpm_arch }}" \
+            --define "_topdir $rpm_top" \
+            --define "_rpmdir $PWD/dist/rpm" \
+            "$rpm_top/SPECS/grasslined.spec"
+          find dist/rpm -type f -name "grasslined-${version}-1.*.rpm" \
+            -exec cp {} "dist/grasslined-${version}-1.${{ matrix.rpm_arch }}.rpm" \;
+          rm -rf "$rpm_top" dist/rpm
+
+          # Arch Linux package
+          pacman_root="$(mktemp -d)"
+          install -Dm755 "dist/$name/grasslined" "$pacman_root/usr/bin/grasslined"
+          install -Dm644 "$unit" "$pacman_root/usr/lib/systemd/user/grasslined.service"
+          install -Dm644 README.md "$pacman_root/usr/share/doc/grasslined/README.md"
+          cat > "$pacman_root/.PKGINFO" <<EOF
+          pkgname = grasslined
+          pkgbase = grasslined
+          pkgver = ${version}-1
+          pkgdesc = Headless daemon for controlling coding agents remotely
+          url = https://github.com/andunieee/grassline
+          builddate = $(date +%s)
+          packager = andunie <andunie@cassis.cash>
+          size = $(du -sb "$pacman_root/usr" | cut -f1)
+          arch = ${{ matrix.pacman_arch }}
+          license = MIT
+          license = Apache-2.0
+          depend = glibc
+          depend = gcc-libs
+          EOF
+          (cd "$pacman_root" && tar --zstd --owner=0 --group=0 --numeric-owner \
+            -cf "$OLDPWD/dist/grasslined-${version}-1-${{ matrix.pacman_arch }}.pkg.tar.zst" \
+            .PKGINFO usr)
+          rm -rf "$pacman_root"
+
+          for package in \
+            "dist/grasslined_${version}_${{ matrix.deb_arch }}.deb" \
+            "dist/grasslined-${version}-1.${{ matrix.rpm_arch }}.rpm" \
+            "dist/grasslined-${version}-1-${{ matrix.pacman_arch }}.pkg.tar.zst"; do
+            (cd dist && sha256sum "$(basename "$package")" > "$(basename "$package").sha256")
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: |
+            dist/*.deb*
+            dist/*.rpm*
+            dist/*.pkg.tar.zst*
           if-no-files-found: error
 
   android:
@@ -169,7 +305,7 @@ jobs:
 
   release:
     name: publish
-    needs: [daemon, android]
+    needs: [daemon, packages, android]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v4
