@@ -7,7 +7,7 @@ use crate::core::Core;
 use crate::hyperb::{iroh_alpn_path, Identity, IROH_ALPN};
 use crate::{admin, control};
 use grassline_proto::{alpn_version, OUTDATED, VERSION};
-use iroh::endpoint::{presets, Connection, Incoming};
+use iroh::endpoint::{presets, Connection, Incoming, IncomingAddr};
 use iroh::{Endpoint, SecretKey};
 use std::sync::Arc;
 
@@ -49,24 +49,35 @@ pub async fn serve(core: Arc<Core>, identity: Identity) {
 }
 
 async fn session(core: Arc<Core>, incoming: Incoming) -> Result<(), String> {
-    let conn: Connection = incoming
-        .accept()
-        .map_err(|e| e.to_string())?
+    let from = describe(&incoming.remote_addr());
+    // Anyone can send datagrams to the endpoint: the ones that are not the
+    // start of a QUIC handshake (scanners, stray packets) are refused here,
+    // and are not worth a line.
+    let Ok(accepting) = incoming.accept() else {
+        return Ok(());
+    };
+    let conn: Connection = accepting
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("handshake with {from} failed: {}", chain(&e)))?;
     let key = conn.remote_id().to_string();
+    connected(core, conn, &key)
+        .await
+        .map_err(|e| format!("{key}: {e}"))
+}
+
+async fn connected(core: Arc<Core>, conn: Connection, key: &str) -> Result<(), String> {
     let alpn = conn.alpn().to_vec();
     match alpn_version(&alpn) {
         Some(VERSION) => {}
         Some(0) => return refuse_unversioned(conn).await,
         Some(_) => {
             conn.close(OUTDATED.into(), VERSION.to_string().as_bytes());
-            return Err(format!("{key} speaks an older protocol"));
+            return Err("speaks an older protocol".into());
         }
-        None => return serve_admin(core, conn, key, &alpn).await,
+        None => return serve_admin(core, conn, key.to_string(), &alpn).await,
     }
-    let (send, recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
-    let result = control::serve(core, key, send, recv).await;
+    let (send, recv) = conn.accept_bi().await.map_err(|e| chain(&e))?;
+    let result = control::serve(core, key.to_string(), send, recv).await;
     // Let the last bytes out before the connection goes away.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
     result
@@ -75,13 +86,13 @@ async fn session(core: Arc<Core>, incoming: Incoming) -> Result<(), String> {
 /// The apps from before the versions speak JSON lines and do not know
 /// [`OUTDATED`], but show why a pairing was refused.
 async fn refuse_unversioned(conn: Connection) -> Result<(), String> {
-    let (mut send, _recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+    let (mut send, _recv) = conn.accept_bi().await.map_err(|e| chain(&e))?;
     let hello = format!(
         r#"{{"t":"hello","ok":false,"error":"The daemon is on version {VERSION}: update the app."}}"#
     );
     send.write_all(format!("{hello}\n").as_bytes())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| chain(&e))?;
     let _ = send.finish();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
     Err("an app from before the versions connected".into())
@@ -101,9 +112,33 @@ async fn serve_admin(
     let cfg = core.config();
     if !cfg.admin_iroh || !cfg.admin_keys.contains(&key) {
         conn.close(1u32.into(), b"not allowed");
-        return Err(format!("admin over iroh refused for {key}"));
+        return Err("admin over iroh refused".into());
     }
-    let (send, recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+    let (send, recv) = conn.accept_bi().await.map_err(|e| chain(&e))?;
     println!("admin session for {key} over iroh");
     admin::serve_iroh(core, send, recv, conn).await
+}
+
+/// Who an incoming connection is from, before it is authenticated.
+fn describe(addr: &IncomingAddr) -> String {
+    match addr {
+        IncomingAddr::Ip(a) => a.to_string(),
+        IncomingAddr::Relay { url, endpoint_id } => format!("{endpoint_id} via {url}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// An error with its causes: noq's "connection lost" only says why in its
+/// source ("timed out", "closed by peer: ...").
+pub fn chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        let s_text = s.to_string();
+        if !out.ends_with(&s_text) {
+            out = format!("{out}: {s_text}");
+        }
+        source = s.source();
+    }
+    out
 }

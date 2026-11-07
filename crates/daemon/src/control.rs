@@ -2,6 +2,7 @@
 //! one iroh stream.
 
 use crate::core::{Core, Update};
+use crate::iroh::chain;
 use grassline_proto::{encode, ClientMsg, Frames, ServerMsg};
 use iroh::endpoint::{RecvStream, SendStream};
 use std::collections::HashSet;
@@ -301,7 +302,7 @@ async fn read(
         if let Some(m) = frames.next() {
             return Ok(Some(m));
         }
-        match recv.read(&mut buf).await.map_err(|e| e.to_string())? {
+        match recv.read(&mut buf).await.map_err(|e| chain(&e))? {
             Some(n) => frames.push(&buf[..n])?,
             None => return Ok(None),
         }
@@ -309,5 +310,5 @@ async fn read(
 }
 
 async fn write(send: &mut SendStream, m: &ServerMsg) -> Result<(), String> {
-    send.write_all(&encode(m)).await.map_err(|e| e.to_string())
+    send.write_all(&encode(m)).await.map_err(|e| chain(&e))
 }
