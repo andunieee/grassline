@@ -74,6 +74,8 @@ pub struct Core {
     sessions: Mutex<HashMap<String, Session>>,
     updates: broadcast::Sender<Update>,
     turns: Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>,
+    /// How many controllers have each session open.
+    viewers: Mutex<HashMap<String, usize>>,
     tokens: Mutex<Vec<(String, Instant)>>,
     /// The models of each agent, by provider name, and when they were listed.
     models: Mutex<HashMap<String, (Instant, Vec<Model>)>>,
@@ -135,6 +137,7 @@ impl Core {
             sessions: Mutex::new(sessions),
             updates: broadcast::channel(1024).0,
             turns: Default::default(),
+            viewers: Default::default(),
             tokens: Default::default(),
             models: Default::default(),
             endpoint_id: OnceLock::new(),
@@ -485,6 +488,7 @@ impl Core {
             permissions,
             queue: vec![],
             archived: false,
+            unread: None,
         };
         self.sessions.lock().unwrap().insert(
             info.id.clone(),
@@ -498,6 +502,33 @@ impl Core {
         self.save(&info.id);
         let _ = self.updates.send(Update::Session(info.clone()));
         Ok(info)
+    }
+
+    /// A controller opened session `id`: it is read, and stays so while
+    /// open. Returns its messages.
+    pub fn watch(&self, id: &str) -> Option<Vec<Message>> {
+        let messages = self.messages(id)?;
+        *self.viewers.lock().unwrap().entry(id.into()).or_default() += 1;
+        let unread = self.sessions.lock().unwrap().get(id)?.info.unread.is_some();
+        if unread {
+            let _ = self.edit_info(id, |i| i.unread = None);
+        }
+        Some(messages)
+    }
+
+    /// A controller closed session `id`, or went away with it open.
+    pub fn unwatch(&self, id: &str) {
+        let mut viewers = self.viewers.lock().unwrap();
+        if let Some(n) = viewers.get_mut(id) {
+            *n -= 1;
+            if *n == 0 {
+                viewers.remove(id);
+            }
+        }
+    }
+
+    fn watched(&self, id: &str) -> bool {
+        self.viewers.lock().unwrap().contains_key(id)
     }
 
     pub fn delete_session(&self, id: &str) {
@@ -618,6 +649,7 @@ impl Core {
         id: &str,
         f: impl FnOnce(&mut Session, u64) -> Option<usize>,
     ) -> Option<usize> {
+        let watched = self.watched(id);
         let (info, index, message) = {
             let mut map = self.sessions.lock().unwrap();
             let s = map.get_mut(id)?;
@@ -626,6 +658,9 @@ impl Core {
             s.info.updated = now;
             if matches!(s.messages[index].role, Role::User | Role::Assistant) {
                 s.info.preview = preview_of(&s.messages);
+            }
+            if s.messages[index].role == Role::Assistant && !watched {
+                s.info.unread = Some(index);
             }
             (s.info.clone(), index, s.messages[index].clone())
         };
@@ -1427,6 +1462,28 @@ while True:
         core.send(&id, "one").unwrap();
         until("the answer", || !info(&core, &id).running).await;
         assert_eq!(core.provider_sessions().get(&id).map(String::as_str), Some("s1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_answer_nobody_had_open_is_unread_until_opened() {
+        let (core, id, dir) = core("unread");
+        core.send(&id, "one").unwrap();
+        until("the answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).unread, Some(1));
+
+        // Opening it reads it, and what arrives while it is open is read too.
+        core.watch(&id).unwrap();
+        assert_eq!(info(&core, &id).unread, None);
+        core.send(&id, "two").unwrap();
+        until("the next answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).unread, None);
+
+        // Only the last answer is unread.
+        core.unwatch(&id);
+        core.send(&id, "three").unwrap();
+        until("the last answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).unread, Some(5));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -3,7 +3,7 @@
 
 use crate::core::{Core, Update};
 use crate::iroh::chain;
-use grassline_proto::{encode, ClientMsg, Frames, ServerMsg};
+use grassline_proto::{encode, ClientMsg, Frames, Message, ServerMsg};
 use iroh::endpoint::{RecvStream, SendStream};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ pub async fn serve(
 
     let mut updates = core.subscribe();
     let mut changes = core.watch_config();
-    let mut opened = HashSet::<String>::new();
+    let mut opened = Opened::new(core.clone());
     // Answers that take a while, like the models.
     let (later, mut late) = mpsc::unbounded_channel::<ServerMsg>();
     write(&mut send, &projects(&core)).await?;
@@ -84,14 +84,14 @@ pub async fn serve(
                     write(&mut send, &ServerMsg::Removed { id }).await?;
                 }
                 Ok(Update::Msg { id, index, message }) => {
-                    if opened.contains(&id) {
+                    if opened.ids.contains(&id) {
                         write(&mut send, &ServerMsg::Msg { id, index, message }).await?;
                     }
                 }
                 // Missed some: start over.
                 Err(RecvError::Lagged(_)) => {
                     write(&mut send, &sessions(&core)).await?;
-                    for id in &opened {
+                    for id in &opened.ids {
                         let messages = core.messages(id).unwrap_or_default();
                         write(&mut send, &ServerMsg::History { id: id.clone(), messages }).await?;
                     }
@@ -123,7 +123,7 @@ pub async fn serve(
 async fn handle(
     core: &Arc<Core>,
     send: &mut SendStream,
-    opened: &mut HashSet<String>,
+    opened: &mut Opened,
     later: &mpsc::UnboundedSender<ServerMsg>,
     msg: ClientMsg,
 ) -> Result<(), String> {
@@ -174,7 +174,7 @@ async fn handle(
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {
                 Ok(info) => {
-                    opened.insert(info.id.clone());
+                    opened.insert(&info.id);
                     // The `Session` update announces it; the history is empty.
                     write(
                         send,
@@ -198,7 +198,7 @@ async fn handle(
                 .and_then(|path| core.create_session(&path, provider.as_deref()));
             match created {
                 Ok(info) => {
-                    opened.insert(info.id.clone());
+                    opened.insert(&info.id);
                     write(
                         send,
                         &ServerMsg::History {
@@ -224,9 +224,8 @@ async fn handle(
             opened.remove(&id);
             core.delete_session(&id);
         }
-        ClientMsg::Open { id } => match core.messages(&id) {
+        ClientMsg::Open { id } => match opened.insert(&id) {
             Some(messages) => {
-                opened.insert(id.clone());
                 write(send, &ServerMsg::History { id, messages }).await?;
             }
             None => write(send, &err("no such session".into())).await?,
@@ -258,6 +257,45 @@ async fn handle(
         } => core.decide(&id, &request, decision),
     }
     Ok(())
+}
+
+/// The sessions a connection has open, let go of when it ends.
+struct Opened {
+    core: Arc<Core>,
+    ids: HashSet<String>,
+}
+
+impl Opened {
+    fn new(core: Arc<Core>) -> Opened {
+        Opened {
+            core,
+            ids: HashSet::new(),
+        }
+    }
+
+    /// Opens session `id`, which marks it read; returns its messages.
+    fn insert(&mut self, id: &str) -> Option<Vec<Message>> {
+        if self.ids.contains(id) {
+            return self.core.messages(id);
+        }
+        let messages = self.core.watch(id)?;
+        self.ids.insert(id.into());
+        Some(messages)
+    }
+
+    fn remove(&mut self, id: &str) {
+        if self.ids.remove(id) {
+            self.core.unwatch(id);
+        }
+    }
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        for id in &self.ids {
+            self.core.unwatch(id);
+        }
+    }
 }
 
 /// The sessions that are not archived.

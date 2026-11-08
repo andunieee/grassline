@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -214,6 +214,11 @@ pub struct SessionInfo {
     /// in [`ServerMsg::Archived`] instead.
     #[serde(default)]
     pub archived: bool,
+    /// The index of the agent's last message, while no controller has seen
+    /// it: it arrived with the session closed everywhere. Opening the
+    /// session clears it.
+    #[serde(default)]
+    pub unread: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -275,7 +280,7 @@ pub enum ClientMsg {
     Delete {
         id: String,
     },
-    /// Starts receiving the messages of a session.
+    /// Starts receiving the messages of a session; it is read from then on.
     Open {
         id: String,
     },

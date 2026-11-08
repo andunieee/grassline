@@ -39,6 +39,8 @@ data class SessionInfo(
     val queue: List<Queued> = emptyList(),
     /** The start of the agent's last message. */
     val preview: String = "",
+    /** The index of the agent's last message while it is unread; opening the session reads it. */
+    val unread: Int? = null,
 )
 
 /** The speech-to-text service the daemon set up for voice messages. */
@@ -75,6 +77,7 @@ private fun parseSession(it: JSONObject) = SessionInfo(
     it.optBoolean("waiting"), it.optString("model"), it.optString("permissions", "auto"),
     it.optJSONArray("queue").map { q -> Queued(q.getString("id"), q.getString("text"), q.optBoolean("steering")) },
     it.optString("preview"),
+    if (it.isNull("unread")) null else it.optInt("unread"),
 )
 
 private fun parseTool(t: JSONObject) = ToolCall(

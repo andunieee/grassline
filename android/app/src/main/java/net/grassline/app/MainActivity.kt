@@ -130,7 +130,8 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
             current = null
         }
         BackHandler(onBack = leave)
-        ChatScreen(state, session, onBack = leave)
+        // A fresh screen for each session, so what it remembers is that session's.
+        key(session.id) { ChatScreen(state, session, onBack = leave) }
     } else if (archive) {
         BackHandler { archive = false }
         ArchiveScreen(state, onOpen = open, onBack = { archive = false })
@@ -527,9 +528,25 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     var pickingModel by remember { mutableStateOf(false) }
     var permissionsMenu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
-    // The list is laid out bottom-up, so it opens on the newest message and stays there as it grows.
+    // The list is laid out top-down, so a reply that streams in grows below what is on screen
+    // instead of pushing it up. It only moves on opening and when the user sends.
+    // Opening the session reads it on the daemon, so what was unread is taken before that comes back.
+    val unread = remember { session.unread }
+    var opened by remember { mutableStateOf(false) }
+    LaunchedEffect(messages.isNotEmpty()) {
+        if (!opened && messages.isNotEmpty()) {
+            if (unread != null && unread < messages.size) {
+                // At the start of the agent's message not seen yet.
+                list.scrollToItem(unread)
+            } else {
+                // An offset past the end is clamped, so this lands at the very bottom of the last message.
+                list.scrollToItem(messages.size - 1, Int.MAX_VALUE)
+            }
+            opened = true
+        }
+    }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) list.animateScrollToItem(0)
+        if (opened && messages.lastOrNull()?.role == "user") list.animateScrollToItem(messages.size - 1)
     }
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -628,9 +645,9 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
             }
         },
     ) { pad ->
-        LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, reverseLayout = true, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (session.running && !session.waiting) item { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
-            items(messages.size, key = { messages.size - 1 - it }) { Bubble(session.id, messages[messages.size - 1 - it]) }
+        LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(messages.size, key = { it }) { Bubble(session.id, messages[it]) }
+            if (session.running && !session.waiting) item(key = "running") { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
         }
     }
 
