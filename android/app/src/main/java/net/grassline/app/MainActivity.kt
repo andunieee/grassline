@@ -124,9 +124,9 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
     if (session != null) {
         val leave = {
             // A voice message that is still uploading is not a message yet:
-            // closing an empty session would delete it before it is sent.
+            // closing an empty session would delete it before it is sent, so it closes after.
             val unsent = voiceBusy(session.id) && state.messages[session.id].isNullOrEmpty() && session.queue.isEmpty()
-            if (!unsent) RustBridge.close(session.id)
+            if (unsent) closeAfterVoice(session.id) else RustBridge.close(session.id)
             current = null
         }
         BackHandler(onBack = leave)
@@ -529,7 +529,7 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     var permissionsMenu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
     // The list is laid out top-down, so a reply that streams in grows below what is on screen
-    // instead of pushing it up. It only moves on opening and when the user sends.
+    // instead of pushing it up. It only moves on opening, when the user sends, and with its height.
     // Opening the session reads it on the daemon, so what was unread is taken before that comes back.
     val unread = remember { session.unread }
     var opened by remember { mutableStateOf(false) }
@@ -547,6 +547,17 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     }
     LaunchedEffect(messages.size) {
         if (opened && messages.lastOrNull()?.role == "user") list.animateScrollToItem(messages.size - 1)
+    }
+    // A top-down list keeps its top when its height changes, so the keyboard or a longer draft would
+    // cover the end of what is on screen: keep the bottom edge where it is instead.
+    LaunchedEffect(list) {
+        var height = 0
+        snapshotFlow { list.layoutInfo.viewportSize.height }.collect { now ->
+            val grown = now - height
+            // Growing at the very end, the list has already moved by itself.
+            if (height != 0 && (grown < 0 || list.canScrollForward)) list.dispatchRawDelta(-grown.toFloat())
+            height = now
+        }
     }
     Scaffold(
         modifier = Modifier.imePadding(),

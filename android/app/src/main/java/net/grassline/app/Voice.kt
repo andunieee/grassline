@@ -236,6 +236,8 @@ class VoiceState(private val id: String, private val context: Context, private v
     internal var askPermission: () -> Unit = {}
     /** A chat shows it; without one, it is dropped once its upload is over. */
     internal var shown = false
+    /** The chat was left with this as all it has: it closes once this is over. */
+    internal var closeWhenDone = false
 
     /** It is on its way to the agent, so leaving the chat must not drop it. */
     val busy: Boolean get() = phase == VoicePhase.Uploading || phase == VoicePhase.Transcribing
@@ -288,9 +290,15 @@ class VoiceState(private val id: String, private val context: Context, private v
             } finally {
                 audio.delete()
                 phase = VoicePhase.Idle
-                if (!shown) voices.remove(id)
+                if (!shown) release()
             }
         }
+    }
+
+    /** Nothing shows it and it is not on its way any more. */
+    internal fun release() {
+        voices.remove(id)
+        if (closeWhenDone) RustBridge.close(id)
     }
 }
 
@@ -301,6 +309,11 @@ private val voiceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immed
 
 /** Whether session [id] has a voice message that has not reached the agent yet. */
 fun voiceBusy(id: String): Boolean = voices[id]?.busy == true
+
+/** Closes session [id] once its voice message is over, sent or not. */
+fun closeAfterVoice(id: String) {
+    voices[id]?.closeWhenDone = true
+}
 
 @Composable
 fun rememberVoice(sessionId: String, onText: (String) -> Unit): VoiceState {
@@ -315,11 +328,12 @@ fun rememberVoice(sessionId: String, onText: (String) -> Unit): VoiceState {
     voice.askPermission = { ask.launch(Manifest.permission.RECORD_AUDIO) }
     DisposableEffect(sessionId) {
         voice.shown = true
+        voice.closeWhenDone = false
         onDispose {
             voice.cancel()
             voice.shown = false
             // An upload that is already going keeps its state until it is there.
-            if (!voice.busy) voices.remove(sessionId)
+            if (!voice.busy) voice.release()
         }
     }
     // A locked phone stops the app from hearing the microphone: keep the screen on while recording.
