@@ -3,7 +3,7 @@
 
 use crate::Controller;
 use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{JClass, JString};
+use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jlong, jstring};
 use jni::EnvUnowned;
 use std::sync::OnceLock;
@@ -133,6 +133,27 @@ simple! {
             log::warn!("bad decision: {e}");
         }
     };
+}
+
+/// `transcribe(audio: ByteArray): String?`: the text, or null with a Java
+/// exception when it failed. Blocks until the daemon answers.
+#[no_mangle]
+pub extern "system" fn Java_net_grassline_app_RustBridge_transcribe(
+    mut env: EnvUnowned<'_>,
+    _class: JClass,
+    audio: JByteArray,
+) -> jstring {
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        let audio = env.convert_byte_array(&audio)?;
+        match controller().transcribe(audio) {
+            Ok(text) => Ok(env.new_string(text)?.into_raw()),
+            Err(e) => {
+                let _ = env.throw(e);
+                Ok(std::ptr::null_mut())
+            }
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
 }
 
 /// `archive(id: String, archived: Boolean)`.

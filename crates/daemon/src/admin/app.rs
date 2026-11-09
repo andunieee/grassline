@@ -4,6 +4,7 @@ use crate::config::{hostname, Config, SPEECH_PROVIDERS};
 #[cfg(test)]
 use crate::core::random_hex;
 use crate::core::{now_ms, Core};
+use crate::local_speech::{find_model, DEFAULT_LOCAL_STT_MODEL, LOCAL_STT_MODELS};
 use grassline_agents::ALL;
 use hypereffect::vtree::{
     self, badge, button, card, checkbox, column, image, input, list, notice, row, select, tab,
@@ -35,6 +36,10 @@ pub struct Admin {
     note_until: Option<u64>,
     /// The tree the renderer has, once it has been sent.
     view: Option<Node>,
+    /// The local model downloads as they were last drawn.
+    downloads: String,
+    /// A local model the user picked Download for, waiting for a confirmation.
+    pending_download: Option<&'static str>,
 }
 
 fn sig(a: &Action, path: &str) -> String {
@@ -61,6 +66,23 @@ fn heading(id: &str, label: &str) -> Node {
 
 fn caption(id: &str, label: impl Into<Value>) -> Node {
     text(id).variant("caption").text(label)
+}
+
+/// A download size in the units people read.
+fn size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+    } else {
+        format!("{} MB", (bytes as f64 / 1_000_000.0).round() as u64)
+    }
+}
+
+fn language_summary(languages: &[&str]) -> String {
+    if languages.len() > 8 {
+        format!("{} languages", languages.len())
+    } else {
+        languages.join(", ")
+    }
 }
 
 /// A form row: an input and the button that sends it.
@@ -244,7 +266,7 @@ impl Admin {
                 Self::projects(&cfg),
                 Self::admin(&cfg),
                 Self::agents(&cfg),
-                Self::voice(&cfg),
+                self.voice(&cfg),
             ]),
         ])
     }
@@ -453,7 +475,7 @@ impl Admin {
         )
     }
 
-    fn voice(cfg: &Config) -> Node {
+    fn voice(&self, cfg: &Config) -> Node {
         let mut options = vec![json!({ "value": "", "label": "Off" })];
         options.extend(
             SPEECH_PROVIDERS
@@ -461,11 +483,16 @@ impl Admin {
                 .map(|p| json!({ "value": p.name, "label": p.label })),
         );
         options.push(json!({ "value": "custom", "label": "Custom" }));
+        options.push(json!({ "value": "local", "label": "Local (this computer)" }));
+        let t = &cfg.transcription;
+        let local = t.provider == "local";
+        let help = if local {
+            "Voice messages from the app are turned into text on this computer. The app sends the recording to the daemon over iroh; no third party sees the audio."
+        } else {
+            "Voice messages from the app are turned into text by this service. The app calls it directly with this key: the audio does not go through the daemon."
+        };
         let body = column("voice-body")
-            .child(caption(
-                "v-help",
-                "Voice messages from the app are turned into text by this service. The app calls it directly with this key: the audio does not go through the daemon.",
-            ))
+            .child(caption("v-help", help))
             .child(setting(
                 select("stt")
                     .label("Speech to text")
@@ -474,10 +501,15 @@ impl Admin {
                 "stt",
                 "set_stt",
             ));
-        let t = &cfg.transcription;
         if t.provider.is_empty() {
             return tab("tab-voice").label("Voice").child(body);
         }
+        if local {
+            return tab("tab-voice")
+                .label("Voice")
+                .child(self.local_voice(body, cfg));
+        }
+
         let preset = SPEECH_PROVIDERS.iter().find(|p| p.name == t.provider);
         let url = preset.is_none().then(|| {
             input("stt-url")
@@ -510,7 +542,10 @@ impl Admin {
                             "warning"
                         })
                         .text(match t.resolve() {
-                            Some(r) => format!("the app uses {}", r.model),
+                            Some(grassline_proto::Transcription::Remote { model, .. }) => {
+                                format!("the app uses {model}")
+                            }
+                            Some(_) => "the app uses a local model".into(),
                             None if preset.is_none() => {
                                 "needs an endpoint, a model and a key".into()
                             }
@@ -525,6 +560,140 @@ impl Admin {
         tab("tab-voice").label("Voice").child(body)
     }
 
+    fn local_voice(&self, body: Node, cfg: &Config) -> Node {
+        let t = &cfg.transcription;
+        let options = LOCAL_STT_MODELS
+            .iter()
+            .map(|m| {
+                json!({
+                    "value": m.id,
+                    "label": format!("{} · {} · {}", m.label, size(m.size), language_summary(m.languages)),
+                })
+            })
+            .collect::<Vec<_>>();
+        let rows = LOCAL_STT_MODELS.iter().enumerate().map(|(i, m)| {
+            let installed = core().speech.installed(m);
+            let download = core().speech.download_status(m.id);
+            let pending = self.pending_download == Some(m.id);
+            let (status, action) = if installed {
+                (
+                    format!("Downloaded · {}", language_summary(m.languages)),
+                    button(format!("local-model-{i}-delete"))
+                        .variant("failure")
+                        .label("Delete")
+                        .on_press(Handler::action("delete_model").payload(m.id)),
+                )
+            } else if let Some(d) = download {
+                let percent = d
+                    .received
+                    .saturating_mul(100)
+                    .checked_div(d.total)
+                    .unwrap_or(0);
+                if let Some(e) = d.error {
+                    (
+                        format!("Download failed: {e}"),
+                        button(format!("local-model-{i}-retry"))
+                            .variant("primary")
+                            .label("Retry")
+                            .on_press(Handler::action("download_model").payload(m.id)),
+                    )
+                } else {
+                    (
+                        format!(
+                            "Not downloaded · {} · {}",
+                            size(m.size),
+                            language_summary(m.languages)
+                        ),
+                        badge(format!("local-model-{i}-progress"))
+                            .variant("warning")
+                            .text(format!("Downloading… {percent}% of {}", size(m.size))),
+                    )
+                }
+            } else if pending {
+                (
+                    format!(
+                        "Download {}? It is {} and is stored on this computer.",
+                        m.label,
+                        size(m.size)
+                    ),
+                    row(format!("local-model-{i}-confirm")).children([
+                        button(format!("local-model-{i}-confirm-yes"))
+                            .variant("primary")
+                            .label(format!("Download {}", size(m.size)))
+                            .on_press(Handler::action("confirm_download").payload(m.id)),
+                        button(format!("local-model-{i}-confirm-no"))
+                            .variant("plain")
+                            .label("Cancel")
+                            .on_press(Handler::action("cancel_download").payload(m.id)),
+                    ]),
+                )
+            } else {
+                (
+                    format!(
+                        "Not downloaded · {} · {}",
+                        size(m.size),
+                        language_summary(m.languages)
+                    ),
+                    button(format!("local-model-{i}-download"))
+                        .variant("primary")
+                        .label("Download")
+                        .on_press(Handler::action("download_model").payload(m.id)),
+                )
+            };
+            row(format!("local-model-{i}"))
+                .justify("between")
+                .children([
+                    column(format!("local-model-{i}-text"))
+                        .child(
+                            text(format!("local-model-{i}-name"))
+                                .variant("h3")
+                                .text(m.label),
+                        )
+                        .child(caption(&format!("local-model-{i}-desc"), m.description))
+                        .child(caption(&format!("local-model-{i}-state"), status)),
+                    action,
+                ])
+        });
+        let state = match t.local_model() {
+            Some(model) if core().speech.installed(model) => {
+                format!("the app uses {}", model.label)
+            }
+            Some(model) => match core().speech.download_status(model.id) {
+                Some(status) if status.error.is_some() => {
+                    format!("{} download failed", model.label)
+                }
+                Some(_) => format!("{} is downloading", model.label),
+                None => format!("{} needs a download", model.label),
+            },
+            None => "pick a model".into(),
+        };
+        body.child(setting(
+            select("local-model")
+                .label("Model on this computer")
+                .options(Value::Array(options)),
+            "local_model",
+            "set_stt_model",
+        ))
+        .child(heading("v-models-h", "Models"))
+        .children(rows)
+        .child(
+            row("v-local-row").justify("between").children([
+                badge("stt-state")
+                    .variant(
+                        if t.local_model().is_some_and(|m| core().speech.installed(m)) {
+                            "success"
+                        } else {
+                            "warning"
+                        },
+                    )
+                    .text(state),
+                text("v-local-dir")
+                    .variant("caption")
+                    .text(core().speech.models_dir().display().to_string()),
+            ]),
+        )
+    }
+
     /// The settings as they are, which every action answers with: it puts
     /// back a control the server did not follow, and ends its loading.
     fn settings() -> Value {
@@ -535,7 +704,12 @@ impl Admin {
             "iroh_on": s(c.admin_iroh.into()),
             "provider": s(c.default_provider.into()),
             "permissions": s(json!(c.permissions)),
-            "stt": s(c.transcription.provider.into()),
+            "stt": s(c.transcription.provider.clone().into()),
+            "local_model": s(c
+                .transcription
+                .local_model()
+                .map_or(DEFAULT_LOCAL_STT_MODEL, |m| m.id)
+                .into()),
         })
     }
 
@@ -723,8 +897,37 @@ impl App for Admin {
             }
             "set_stt" => {
                 let p = sig(a, "stt.value");
-                core.update_config(|c| c.transcription.provider = p);
+                core.update_config(|c| {
+                    c.transcription.provider = p.clone();
+                    if p == "local" && find_model(c.transcription.model.trim()).is_none() {
+                        c.transcription.model = DEFAULT_LOCAL_STT_MODEL.into();
+                    }
+                });
             }
+            "set_stt_model" => {
+                let id = sig(a, "local_model.value");
+                match find_model(&id) {
+                    Some(model) => {
+                        core.update_config(|c| c.transcription.model = model.id.into());
+                    }
+                    None => self.fail(format!("{id} is not a local speech model")),
+                }
+            }
+            "download_model" => match find_model(&payload) {
+                Some(model) => self.pending_download = Some(model.id),
+                None => self.fail(format!("{payload} is not a local speech model")),
+            },
+            "confirm_download" => {
+                self.pending_download = None;
+                if let Err(e) = core.speech.start_download(&payload) {
+                    self.fail(e);
+                }
+            }
+            "cancel_download" => self.pending_download = None,
+            "delete_model" => match core.speech.delete(&payload) {
+                Ok(()) => self.flash("Deleted"),
+                Err(e) => self.fail(e),
+            },
             "set_stt_details" => {
                 let (key, model, url) = (sig(a, "stt_key"), sig(a, "stt_model"), sig(a, "stt_url"));
                 if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
@@ -762,11 +965,22 @@ impl App for Admin {
         if Self::sessions_snapshot() != self.shown {
             self.render(out);
         }
+        let downloads = core().speech.download_snapshot();
+        if downloads != self.downloads {
+            self.downloads = downloads;
+            self.render(out);
+        }
     }
 
     fn tick_interval(&self) -> Option<u32> {
-        // Sooner while a note is about to go away.
-        Some(if self.note_until.is_some() { 250 } else { 2000 })
+        // Sooner while a note is about to go away or a model is downloading.
+        Some(
+            if self.note_until.is_some() || core().speech.downloading() {
+                250
+            } else {
+                2000
+            },
+        )
     }
 }
 
@@ -815,8 +1029,11 @@ mod tests {
         assert!(l.client.attr("stt-key", "bind").is_some());
         l.write("stt_key", json!("k"));
         assert!(l.trigger("stt-save", "onPress"));
-        let t = super::core().config().transcription.resolve().unwrap();
-        assert_eq!(t.model, "whisper-large-v3-turbo");
+        assert!(matches!(
+            super::core().config().transcription.resolve(),
+            Some(grassline_proto::Transcription::Remote { model, .. })
+                if model == "whisper-large-v3-turbo"
+        ));
 
         // The machine can be renamed, and an empty name goes back to the
         // hostname.
@@ -845,6 +1062,31 @@ mod tests {
         assert_eq!(visible(&l, &gone), Some(json!(false)));
         l.write("show_archived", json!(true));
         assert_eq!(visible(&l, &gone), Some(json!(true)));
+
+        // The local provider lists its models and needs no key.
+        super::core().update_config(|c| {
+            c.transcription.provider = "local".into();
+            c.transcription.model = crate::local_speech::DEFAULT_LOCAL_STT_MODEL.into();
+        });
+        l.write("machine_name", json!("Studio"));
+        assert!(l.trigger("machine_name-go", "onPress"));
+        assert_eq!(l.client.attr("stt-key", "bind"), None);
+        assert_eq!(
+            l.client.attr("local-model-0-download", "label"),
+            Some(json!("Download"))
+        );
+        assert!(l.client.attr("local-model", "options").is_some());
+        // Downloading needs a second, explicit confirmation.
+        assert!(l.trigger("local-model-0-download", "onPress"));
+        assert_eq!(
+            l.client.attr("local-model-0-confirm-yes", "label"),
+            Some(json!("Download 482 MB"))
+        );
+        assert!(l.trigger("local-model-0-confirm-no", "onPress"));
+        assert_eq!(
+            l.client.attr("local-model-0-download", "label"),
+            Some(json!("Download"))
+        );
 
         assert!(l.client.take_diagnostics().is_empty());
         let _ = std::fs::remove_dir_all(dir);

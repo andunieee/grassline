@@ -9,6 +9,7 @@ mod core;
 mod hyperb;
 mod iroh;
 mod lines;
+mod local_speech;
 mod version;
 
 use clap::Parser;

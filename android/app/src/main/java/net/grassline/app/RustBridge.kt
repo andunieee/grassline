@@ -22,6 +22,8 @@ object RustBridge {
     /** Forgets the daemon the app is on, and goes to another one if there is. */
     @JvmStatic external fun unpair()
     @JvmStatic external fun refresh()
+    /** Sends a 16 kHz mono WAV to the daemon's local speech model; returns the text. */
+    @JvmStatic external fun transcribe(audio: ByteArray): String?
     /** Creates a session in [project] with [provider], or the default agent when it is empty. */
     @JvmStatic external fun create(project: String, provider: String)
 

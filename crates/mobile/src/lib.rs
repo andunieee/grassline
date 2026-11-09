@@ -49,6 +49,8 @@ struct State {
     archived: Option<Vec<SessionInfo>>,
     /// Where voice messages are turned into text, if the daemon set it up.
     transcription: Option<Transcription>,
+    /// The answer to a transcription request, while the app waits for it.
+    transcription_result: Option<(String, Result<String, String>)>,
     /// The models of the agents they were asked for, by provider name.
     models: HashMap<String, Models>,
     /// The messages of the sessions that are open.
@@ -304,6 +306,44 @@ impl Controller {
         self.send(ClientMsg::Refresh);
     }
 
+    /// Sends a 16 kHz mono WAV to the daemon's local speech model and waits
+    /// for its text. Blocks, so call it off the UI thread.
+    pub fn transcribe(&self, audio: Vec<u8>) -> Result<String, String> {
+        if audio.is_empty() {
+            return Err("nothing was recorded".into());
+        }
+        if audio.len() > 15 * 1024 * 1024 {
+            return Err("the voice message is too long".into());
+        }
+        let request = format!("voice-{}", random_hex(8));
+        if self.shared.out.lock().unwrap().is_none() {
+            return Err("not connected to the daemon".into());
+        }
+        self.shared.edit(|s| s.transcription_result = None);
+        self.send(ClientMsg::Transcribe {
+            request: request.clone(),
+            audio,
+        });
+        let s = self.shared.state.lock().unwrap();
+        let (s, wait) = self
+            .shared
+            .changed
+            .wait_timeout_while(s, Duration::from_secs(300), |s| {
+                !matches!(
+                    &s.transcription_result,
+                    Some((id, _)) if id == &request
+                )
+            })
+            .unwrap();
+        if wait.timed_out() {
+            return Err("the daemon did not answer; is it still running?".into());
+        }
+        match s.transcription_result.as_ref() {
+            Some((id, result)) if id == &request => result.clone(),
+            _ => Err("the daemon did not answer".into()),
+        }
+    }
+
     /// Creates a session with `provider`, or the default agent when it is
     /// empty.
     pub fn create(&self, project: &str, provider: &str) {
@@ -448,8 +488,8 @@ impl Controller {
     /// whether each is installed and `steers`), `default_agent`, `models` (by
     /// agent: `items`, `error` and `loading`), `sessions` (most recent first,
     /// each with its `model`, `permissions` and `queue`), `archived` (the
-    /// same, or null until asked for), `transcription` (`url`, `model` and `key` of the
-    /// speech-to-text service, or null), `messages` (by session id; a tool call's `tool` has its
+    /// same, or null until asked for), `transcription` (`provider`, and `url`, `model` and `key`
+    /// for a remote endpoint, or just `model` for a local one; null when off), `messages` (by session id; a tool call's `tool` has its
     /// progress and what it asks), `error`, `key`, `daemons` (each paired
     /// daemon's `endpoint` and `name`), `daemon` (the endpoint of the one the
     /// app is on, or null) and `pairing` (the connection is a pairing not let in
@@ -492,6 +532,18 @@ impl Controller {
             .unwrap();
         s.version
     }
+}
+
+fn random_hex(bytes: usize) -> String {
+    let mut b = vec![0u8; bytes];
+    if getrandom::getrandom(&mut b).is_err() {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        return format!("{n:x}");
+    }
+    hex::encode(b)
 }
 
 fn load_secret(path: &Path) -> std::io::Result<SecretKey> {
@@ -676,6 +728,18 @@ fn apply(shared: &Shared, msg: ServerMsg) {
             );
         }
         ServerMsg::Transcription { config } => s.transcription = config,
+        ServerMsg::Transcribed {
+            request,
+            text,
+            error,
+        } => {
+            let result = match (text, error) {
+                (Some(text), _) => Ok(text),
+                (_, Some(error)) => Err(error),
+                _ => Err("the daemon sent no transcript".into()),
+            };
+            s.transcription_result = Some((request, result));
+        }
         ServerMsg::Sessions { items } => s.sessions = items,
         ServerMsg::Archived { items } => s.archived = Some(items),
         ServerMsg::Session { info } => {

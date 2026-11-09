@@ -10,7 +10,7 @@ Grassline runs Claude Code, opencode, Codex and others on your own computer and 
 
 Grassline has no notifications, no file browser or command line and doesn't try to replicate your desktop workstation in your phone, only a chat interface for when you're on the go.
 
-Voice commands are supported as long as you bring your own API keys.
+Voice commands work with a speech model that runs on your own computer, or with your own API keys; the local option needs no cloud account.
 
 Communication between phone and computer computer happens over [iroh](https://iroh.computer), so it is encrypted and works and no servers are needed.
 
@@ -27,7 +27,9 @@ The daemon that you run on your computer is pure Rust with no UI, it uses almost
 
 ## The admin dashboard
 
-The daemon on your computer is headless, but it can be configured from a dashboard you open in a [hyperb](https://github.com/andunieee/hyperb) browser. There you can pair phones and see who's connected, choose which directories are projects, check which agents are installed, and set up voice messages.
+The daemon on your computer is headless, but it can be configured from a dashboard you open in a [hyperb](https://github.com/andunieee/hyperb) browser. There you can pair phones and see who's connected, choose which directories are projects, check which agents are installed, and set up voice messages, including downloading local speech models.
+
+Local speech models run on the daemon's CPU with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). They are downloaded on demand into `~/.local/share/grassline/models/local-speech` and never send audio to a third party.
 
 <p align="center">
   <img src="screenshots/admin-agents.png" width="49%" alt="Agents">

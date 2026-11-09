@@ -95,7 +95,7 @@ private fun demoState(): AppState {
         agents = agents,
         defaultAgent = "claude",
         sessions = sessions,
-        transcription = Transcription("", "", ""),
+        transcription = Transcription("remote", "", "", ""),
         messages = mapOf("s1" to chat, "s2" to questions),
         daemons = listOf(Daemon("e1", "workstation"), Daemon("e2", "laptop")),
         daemon = "e1",

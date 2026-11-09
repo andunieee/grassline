@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -162,16 +162,22 @@ pub enum Permissions {
     All,
 }
 
-/// Where the controller sends voice messages to be turned into text: an
-/// OpenAI-style `audio/transcriptions` endpoint, called from the controller
-/// itself, so the audio does not go through the daemon.
+/// Where the controller sends voice messages to be turned into text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Transcription {
-    /// The endpoint's full URL.
-    pub url: String,
-    pub model: String,
-    /// Sent as a bearer token.
-    pub key: String,
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum Transcription {
+    /// An OpenAI-style `audio/transcriptions` endpoint, called from the
+    /// controller itself, so the audio does not go through the daemon.
+    Remote {
+        /// The endpoint's full URL.
+        url: String,
+        model: String,
+        /// Sent as a bearer token.
+        key: String,
+    },
+    /// A model on the daemon's machine. The controller sends the audio to the
+    /// daemon with [`ClientMsg::Transcribe`].
+    Local { model: String },
 }
 
 /// A message waiting for the agent to finish its turn.
@@ -268,6 +274,12 @@ pub enum ClientMsg {
     Models {
         provider: String,
     },
+    /// Turns a voice message into text with the daemon's local speech model;
+    /// answered with [`ServerMsg::Transcribed`]. `audio` is a 16 kHz mono WAV.
+    Transcribe {
+        request: String,
+        audio: Vec<u8>,
+    },
     /// Puts session `id` in the archive, or takes it out. Sending it a
     /// message takes it out too.
     Archive {
@@ -349,6 +361,13 @@ pub enum ServerMsg {
     Transcription {
         config: Option<Transcription>,
     },
+    /// The answer to a [`ClientMsg::Transcribe`]. Exactly one of `text` and
+    /// `error` is set.
+    Transcribed {
+        request: String,
+        text: Option<String>,
+        error: Option<String>,
+    },
     /// Every session but the archived ones, most recently updated first.
     Sessions {
         items: Vec<SessionInfo>,
@@ -381,8 +400,9 @@ pub enum ServerMsg {
     },
 }
 
-/// The most a stream may hold back before a frame is whole.
-const MAX_PENDING: usize = 4 << 20;
+/// The most a stream may hold back before a frame is whole. Voice messages
+/// carry audio, so this is larger than the usual message.
+const MAX_PENDING: usize = 16 << 20;
 
 /// `m` as a frame: its length as a little-endian `u32`, then `m` in postcard.
 /// Postcard does not say which fields are there, so both ends must have the
@@ -464,6 +484,34 @@ mod tests {
         assert!(frames.next::<ClientMsg>().unwrap().is_err());
         assert_eq!(frames.next::<ClientMsg>().unwrap(), Ok(ClientMsg::Refresh));
         assert!(frames.next::<ClientMsg>().is_none());
+    }
+
+    #[test]
+    fn transcriptions_say_where_they_run() {
+        let local = Transcription::Local {
+            model: "parakeet-tdt-0.6b-v2-int8".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&local).unwrap(),
+            serde_json::json!({
+                "provider": "local",
+                "model": "parakeet-tdt-0.6b-v2-int8",
+            })
+        );
+        let remote = Transcription::Remote {
+            url: "https://example.com/v1/audio/transcriptions".into(),
+            model: "whisper-1".into(),
+            key: "k".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&remote).unwrap(),
+            serde_json::json!({
+                "provider": "remote",
+                "url": "https://example.com/v1/audio/transcriptions",
+                "model": "whisper-1",
+                "key": "k",
+            })
+        );
     }
 
     #[test]

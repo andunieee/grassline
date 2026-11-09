@@ -171,6 +171,24 @@ async fn handle(
                 });
             });
         }
+        ClientMsg::Transcribe { request, audio } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                let msg = match core.transcribe_audio(audio).await {
+                    Ok(text) => ServerMsg::Transcribed {
+                        request,
+                        text: Some(text),
+                        error: None,
+                    },
+                    Err(error) => ServerMsg::Transcribed {
+                        request,
+                        text: None,
+                        error: Some(error),
+                    },
+                };
+                let _ = later.send(msg);
+            });
+        }
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {
                 Ok(info) => {

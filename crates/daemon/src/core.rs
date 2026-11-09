@@ -1,6 +1,7 @@
 //! The daemon's state: settings, projects, and the agent sessions.
 
 use crate::config::Config;
+use crate::local_speech::LocalSpeech;
 use grassline_agents::{Answer, Event, Provider, Turn};
 use grassline_proto::{
     Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Queued, Role,
@@ -82,6 +83,8 @@ pub struct Core {
     /// The iroh endpoint id, once the endpoint is up.
     pub endpoint_id: OnceLock<String>,
     pub online: AtomicBool,
+    /// The local speech models, their downloads and the recognizer.
+    pub speech: Arc<LocalSpeech>,
 }
 
 pub fn now_ms() -> u64 {
@@ -129,6 +132,7 @@ impl Core {
                 }
             }
         }
+        let speech = LocalSpeech::new(&data_dir);
         Arc::new(Core {
             config_path,
             data_dir,
@@ -142,6 +146,7 @@ impl Core {
             models: Default::default(),
             endpoint_id: OnceLock::new(),
             online: AtomicBool::new(false),
+            speech,
         })
     }
 
@@ -149,6 +154,19 @@ impl Core {
 
     pub fn config(&self) -> Config {
         self.config.read().unwrap().clone()
+    }
+
+    /// Turns a voice message into text with the configured local model.
+    pub async fn transcribe_audio(&self, audio: Vec<u8>) -> Result<String, String> {
+        let model = self
+            .config()
+            .transcription
+            .local_model()
+            .ok_or("local speech-to-text is not set up")?;
+        let speech = self.speech.clone();
+        tokio::task::spawn_blocking(move || speech.transcribe(model.id, &audio))
+            .await
+            .map_err(|e| format!("speech-to-text stopped: {e}"))?
     }
 
     /// Edits the settings, saves them and tells the watchers.
@@ -1461,7 +1479,10 @@ while True:
         assert!(core.provider_sessions().is_empty());
         core.send(&id, "one").unwrap();
         until("the answer", || !info(&core, &id).running).await;
-        assert_eq!(core.provider_sessions().get(&id).map(String::as_str), Some("s1"));
+        assert_eq!(
+            core.provider_sessions().get(&id).map(String::as_str),
+            Some("s1")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

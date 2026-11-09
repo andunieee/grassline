@@ -87,8 +87,18 @@ pub const SPEECH_PROVIDERS: &[SpeechProvider] = &[
 ];
 
 impl Transcription {
-    /// What the app needs to call the service, once it is set up.
+    /// What the app needs to turn a voice message into text, once it is set up.
     pub fn resolve(&self) -> Option<grassline_proto::Transcription> {
+        if self.provider == "local" {
+            let model = match self.model.trim() {
+                "" => crate::local_speech::DEFAULT_LOCAL_STT_MODEL,
+                model => model,
+            };
+            crate::local_speech::find_model(model)?;
+            return Some(grassline_proto::Transcription::Local {
+                model: model.into(),
+            });
+        }
         let (url, model) = match SPEECH_PROVIDERS.iter().find(|p| p.name == self.provider) {
             Some(p) => (p.url.to_string(), p.model),
             None if self.provider == "custom" => (self.url.trim().to_string(), ""),
@@ -100,11 +110,23 @@ impl Transcription {
         if url.is_empty() || model.is_empty() || self.key.trim().is_empty() {
             return None;
         }
-        Some(grassline_proto::Transcription {
+        Some(grassline_proto::Transcription::Remote {
             url,
             model: model.into(),
             key: self.key.trim().into(),
         })
+    }
+
+    /// The local model this setting uses, if it is the local provider.
+    pub fn local_model(&self) -> Option<&'static crate::local_speech::ModelSpec> {
+        if self.provider != "local" {
+            return None;
+        }
+        let model = match self.model.trim() {
+            "" => crate::local_speech::DEFAULT_LOCAL_STT_MODEL,
+            model => model,
+        };
+        crate::local_speech::find_model(model)
     }
 }
 
@@ -297,13 +319,30 @@ mod tests {
         };
         assert_eq!(t.resolve(), None);
         t.key = "k".into();
-        assert_eq!(t.resolve().unwrap().model, "whisper-large-v3-turbo");
+        assert!(matches!(
+            t.resolve(),
+            Some(grassline_proto::Transcription::Remote { model, .. })
+                if model == "whisper-large-v3-turbo"
+        ));
         t.provider = "custom".into();
         t.url = "http://localhost:8000/v1/audio/transcriptions".into();
         assert_eq!(t.resolve(), None);
         t.model = "whisper-1".into();
-        assert_eq!(t.resolve().unwrap().url, t.url);
+        assert!(matches!(
+            t.resolve(),
+            Some(grassline_proto::Transcription::Remote { url, .. }) if url == t.url
+        ));
         t.provider = String::new();
+        assert_eq!(t.resolve(), None);
+
+        t.provider = "local".into();
+        t.model = crate::local_speech::DEFAULT_LOCAL_STT_MODEL.into();
+        assert!(matches!(
+            t.resolve(),
+            Some(grassline_proto::Transcription::Local { model })
+                if model == crate::local_speech::DEFAULT_LOCAL_STT_MODEL
+        ));
+        t.model = "not-a-model".into();
         assert_eq!(t.resolve(), None);
     }
 }

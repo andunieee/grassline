@@ -44,7 +44,13 @@ data class SessionInfo(
 )
 
 /** The speech-to-text service the daemon set up for voice messages. */
-data class Transcription(val url: String, val model: String, val key: String)
+data class Transcription(
+    /** "remote" (an OpenAI-style endpoint called by the app) or "local" (a daemon model). */
+    val provider: String,
+    val url: String,
+    val model: String,
+    val key: String,
+)
 
 data class Choice(val label: String, val description: String)
 
@@ -153,7 +159,12 @@ data class AppState(
                 sessions = o.getJSONArray("sessions").map(::parseSession),
                 archived = o.optJSONArray("archived")?.map(::parseSession),
                 transcription = o.optJSONObject("transcription")?.let {
-                    Transcription(it.getString("url"), it.getString("model"), it.getString("key"))
+                    Transcription(
+                        it.optString("provider", "remote"),
+                        it.optString("url"),
+                        it.getString("model"),
+                        it.optString("key"),
+                    )
                 },
                 messages = msgs.keys().asSequence().associateWith { k ->
                     msgs.getJSONArray(k).map {
