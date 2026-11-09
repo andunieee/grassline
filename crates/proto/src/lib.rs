@@ -220,9 +220,9 @@ pub struct SessionInfo {
     /// in [`ServerMsg::Archived`] instead.
     #[serde(default)]
     pub archived: bool,
-    /// The index of the agent's last message, while no controller has seen
-    /// it: it arrived with the session closed everywhere. Opening the
-    /// session clears it.
+    /// The index of the agent's first message no controller has seen: it
+    /// arrived with the session closed everywhere. Opening the session
+    /// clears it.
     #[serde(default)]
     pub unread: Option<usize>,
 }

@@ -39,7 +39,7 @@ data class SessionInfo(
     val queue: List<Queued> = emptyList(),
     /** The start of the agent's last message. */
     val preview: String = "",
-    /** The index of the agent's last message while it is unread; opening the session reads it. */
+    /** The index of the agent's first unread message; opening the session reads it. */
     val unread: Int? = null,
 )
 

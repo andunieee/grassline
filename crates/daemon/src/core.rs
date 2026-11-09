@@ -678,7 +678,7 @@ impl Core {
                 s.info.preview = preview_of(&s.messages);
             }
             if s.messages[index].role == Role::Assistant && !watched {
-                s.info.unread = Some(index);
+                s.info.unread.get_or_insert(index);
             }
             (s.info.clone(), index, s.messages[index].clone())
         };
@@ -1500,10 +1500,15 @@ while True:
         until("the next answer", || !info(&core, &id).running).await;
         assert_eq!(info(&core, &id).unread, None);
 
-        // Only the last answer is unread.
+        // What was seen before it is not unread.
         core.unwatch(&id);
         core.send(&id, "three").unwrap();
         until("the last answer", || !info(&core, &id).running).await;
+        assert_eq!(info(&core, &id).unread, Some(5));
+
+        // It stays on the first answer not seen.
+        core.send(&id, "four").unwrap();
+        until("another answer", || !info(&core, &id).running).await;
         assert_eq!(info(&core, &id).unread, Some(5));
         let _ = std::fs::remove_dir_all(dir);
     }
