@@ -134,6 +134,12 @@ data class AppState(
     val daemon: String? = null,
     /** The connection is a pairing the daemon has not let in yet; once it does, the app is on that daemon. */
     val pairing: Boolean = false,
+    /** This build's version, with its git commit. */
+    val version: String = "",
+    /** The version of the wire protocol this app speaks. */
+    val wireVersion: Int = 0,
+    /** This phone's pairing key. */
+    val key: String = "",
 ) {
     companion object {
         fun parse(json: String): AppState {
@@ -175,6 +181,9 @@ data class AppState(
                 daemons = o.optJSONArray("daemons").map { Daemon(it.getString("endpoint"), it.optString("name")) },
                 daemon = o.optStringOrNull("daemon"),
                 pairing = o.optBoolean("pairing"),
+                version = o.optString("version"),
+                wireVersion = o.optInt("wire_version"),
+                key = o.optString("key"),
             )
         }
     }

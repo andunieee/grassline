@@ -10,7 +10,6 @@ mod hyperb;
 mod iroh;
 mod lines;
 mod local_speech;
-mod version;
 
 use clap::Parser;
 use hyperb::Identity;
@@ -22,7 +21,7 @@ use std::path::PathBuf;
 /// Settings and the iroh key live in the config directory (default
 /// ~/.config/grassline); sessions in ~/.local/share/grassline.
 #[derive(Parser)]
-#[command(name = "grasslined", version = version::full())]
+#[command(name = "grasslined", version = grassline_version::full())]
 struct Args {
     /// Where settings and the iroh key live (default ~/.config/grassline)
     #[arg(long, value_name = "DIR")]
@@ -33,7 +32,11 @@ struct Args {
 async fn main() {
     let args = Args::parse();
     let config_dir = args.config_dir.unwrap_or_else(config::config_dir);
-    println!("grasslined {}", version::full());
+    println!(
+        "grasslined {} (wire version {})",
+        grassline_version::full(),
+        grassline_proto::VERSION
+    );
     let data_dir = std::env::var_os("GRASSLINE_DATA_DIR")
         .map(Into::into)
         .unwrap_or_else(config::data_dir);

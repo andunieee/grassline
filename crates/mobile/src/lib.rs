@@ -490,10 +490,11 @@ impl Controller {
     /// each with its `model`, `permissions` and `queue`), `archived` (the
     /// same, or null until asked for), `transcription` (`provider`, and `url`, `model` and `key`
     /// for a remote endpoint, or just `model` for a local one; null when off), `messages` (by session id; a tool call's `tool` has its
-    /// progress and what it asks), `error`, `key`, `daemons` (each paired
-    /// daemon's `endpoint` and `name`), `daemon` (the endpoint of the one the
-    /// app is on, or null) and `pairing` (the connection is a pairing not let in
-    /// yet: when it succeeds, the app goes to that daemon).
+    /// progress and what it asks), `error`, `key` (this phone's pairing key),
+    /// `version` and `wire_version` (what to show in About), `daemons` (each
+    /// paired daemon's `endpoint` and `name`), `daemon` (the endpoint of the
+    /// one the app is on, or null) and `pairing` (the connection is a pairing
+    /// not let in yet: when it succeeds, the app goes to that daemon).
     pub fn snapshot(&self) -> String {
         let s = self.shared.state.lock().unwrap();
         let saved = self.shared.saved.lock().unwrap();
@@ -510,6 +511,8 @@ impl Controller {
         o.insert("messages".into(), json!(s.messages));
         o.insert("error".into(), json!(s.error));
         o.insert("key".into(), json!(self.key()));
+        o.insert("version".into(), json!(grassline_version::full()));
+        o.insert("wire_version".into(), json!(VERSION));
         o.insert("daemons".into(), json!(saved.daemons));
         o.insert("daemon".into(), json!(saved.current));
         o.insert("pairing".into(), json!(s.pairing));

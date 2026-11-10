@@ -1,4 +1,4 @@
-//! Records the tag and commit this build came from, for the startup banner.
+//! Records the tag and commit this build came from, for the version strings.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

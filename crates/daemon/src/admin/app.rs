@@ -260,6 +260,14 @@ impl Admin {
             .map(|(msg, variant)| notice("note").variant(*variant).text(msg.as_str()));
         column("root").children([
             text("title").variant("h1").text("Grassline"),
+            caption(
+                "version",
+                format!(
+                    "{} · wire version {}",
+                    grassline_version::full(),
+                    grassline_proto::VERSION
+                ),
+            ),
             column("notes").children(note),
             tabs("tabs").children([
                 self.access(&cfg),
@@ -999,6 +1007,14 @@ mod tests {
         let expected = format!("grassline@{}", super::core().config().machine_name());
         assert_eq!(l.client.metadata().name.as_deref(), Some(expected.as_str()));
         assert_eq!(l.client.metadata().icon.as_deref(), Some(ICON));
+        assert_eq!(
+            l.client.attr("version", "text"),
+            Some(json!(format!(
+                "{} · wire version {}",
+                grassline_version::full(),
+                grassline_proto::VERSION
+            )))
+        );
         assert!(l.trigger("pair", "onPress"));
         let src = l.client.attr("ticket-qr", "src").expect("a QR code");
         assert!(src.as_str().unwrap().starts_with("data:image/png;base64,"));

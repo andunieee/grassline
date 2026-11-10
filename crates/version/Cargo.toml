@@ -1,0 +1,7 @@
+[package]
+name = "grassline-version"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "grassline_version"

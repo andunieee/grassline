@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 grassline-proto = { path = "crates/proto" }
 grassline-agents = { path = "crates/agents" }
+grassline-version = { path = "crates/version" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard = { version = "1", default-features = false, features = ["alloc"] }

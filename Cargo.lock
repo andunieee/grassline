@@ -1307,6 +1307,7 @@ dependencies = [
  "getrandom 0.2.17",
  "grassline-agents",
  "grassline-proto",
+ "grassline-version",
  "hex",
  "hypereffect",
  "iroh",
@@ -1328,6 +1329,7 @@ dependencies = [
  "android_logger",
  "getrandom 0.2.17",
  "grassline-proto",
+ "grassline-version",
  "hex",
  "iroh",
  "jni 0.22.4",
@@ -1345,6 +1347,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "grassline-version"
+version = "0.1.0"
 
 [[package]]
 name = "h2"

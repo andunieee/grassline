@@ -89,6 +89,13 @@ fun rememberCoreState(): State<AppState> {
 @Composable
 fun App(link: String?, onLinkUsed: () -> Unit) {
     val state by rememberCoreState()
+    // The About screen, reachable from the pairing screen and the sessions list.
+    var about by remember { mutableStateOf(false) }
+    if (about) {
+        BackHandler { about = false }
+        AboutScreen(state, onBack = { about = false })
+        return
+    }
     if (state.status == "outdated") {
         OutdatedScreen(state.reason)
         return
@@ -101,7 +108,7 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
     if (state.status == "unpaired" || state.pairing || adding) {
         // Back to the daemon the app was on.
         val back = state.daemon?.let { previous -> { adding = false; if (state.pairing) RustBridge.switchTo(previous) } }
-        PairScreen(state, link, back, onLinkUsed)
+        PairScreen(state, link, back, onLinkUsed, onAbout = { about = true })
         return
     }
     var current by remember { mutableStateOf<String?>(null) }
@@ -140,6 +147,7 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
             state,
             onOpen = open,
             onArchive = { archive = true },
+            onAbout = { about = true },
             onAddDaemon = { adding = true },
             onCreate = { project, agent ->
                 waitingFor = state.sessions.map { it.id }.toSet()
@@ -154,7 +162,7 @@ fun App(link: String?, onLinkUsed: () -> Unit) {
 }
 
 @Composable
-fun PairScreen(state: AppState, link: String?, onBack: (() -> Unit)?, onLinkUsed: () -> Unit) {
+fun PairScreen(state: AppState, link: String?, onBack: (() -> Unit)?, onLinkUsed: () -> Unit, onAbout: () -> Unit) {
     var ticket by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var ownScanner by remember { mutableStateOf(false) }
@@ -182,6 +190,7 @@ fun PairScreen(state: AppState, link: String?, onBack: (() -> Unit)?, onLinkUsed
         if (onBack != null) {
             IconButton(onBack, Modifier.systemBarsPadding().padding(4.dp)) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         }
+        TextButton(onClick = onAbout, Modifier.align(Alignment.TopEnd).systemBarsPadding().padding(4.dp)) { Text("About") }
     }
 }
 
@@ -228,6 +237,59 @@ fun OutdatedScreen(version: String?) {
     }
 }
 
+/** This build and the phone's pairing key. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AboutScreen(state: AppState, onBack: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("About") },
+                navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            )
+        },
+    ) { pad ->
+        Column(
+            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Image(painterResource(R.drawable.logo), null, Modifier.size(72.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Grassline", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Your coding agents, from anywhere.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                AboutValue("Version", state.version)
+                AboutValue("Wire version", state.wireVersion.takeIf { it > 0 }?.toString().orEmpty())
+                AboutValue("Pairing key", state.key)
+            }
+            Text(
+                "The pairing key identifies this phone to its daemon; the daemon lists it with its paired devices.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutValue(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+        SelectionContainer {
+            Text(
+                value.ifEmpty { "unknown" },
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
 /** The last error the daemon reported; it goes away after a while, or when tapped. */
 @Composable
 fun ErrorLine(state: AppState) {
@@ -244,7 +306,7 @@ fun ErrorLine(state: AppState) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onAddDaemon: () -> Unit, onCreate: (Project, String) -> Unit, onCreateProject: (root: String, name: String, agent: String) -> Unit = { _, _, _ -> }) {
+fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: () -> Unit, onAbout: () -> Unit, onAddDaemon: () -> Unit, onCreate: (Project, String) -> Unit, onCreateProject: (root: String, name: String, agent: String) -> Unit = { _, _, _ -> }) {
     var picking by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var daemonMenu by remember { mutableStateOf(false) }
@@ -308,6 +370,7 @@ fun SessionsScreen(state: AppState, onOpen: (SessionInfo) -> Unit, onArchive: ()
                         DropdownMenuItem(text = { Text("Archive") }, onClick = { menu = false; onArchive() })
                         DropdownMenuItem(text = { Text("Refresh") }, onClick = { menu = false; RustBridge.refresh() })
                         DropdownMenuItem(text = { Text("Unpair this daemon") }, onClick = { menu = false; RustBridge.unpair() })
+                        DropdownMenuItem(text = { Text("About") }, onClick = { menu = false; onAbout() })
                         HorizontalDivider()
                         for (m in ThemeMode.entries) {
                             DropdownMenuItem(

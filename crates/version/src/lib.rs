@@ -1,16 +1,9 @@
-//! What to call this build. A build from a clean tag is just the tag; a
-//! build from a dirty tree, past a tag, or with debug assertions names the
-//! commit as well.
+//! What to call this build: its tag or version, and the commit it came from.
 
 fn format(tag: Option<&str>, count: u64, commit: Option<&str>, dirty: bool, debug: bool) -> String {
     let Some(commit) = commit else {
         return format!("v{}", env!("CARGO_PKG_VERSION"));
     };
-    if let Some(tag) = tag {
-        if count == 0 && !dirty && !debug {
-            return tag.to_string();
-        }
-    }
     let mut version = match tag {
         Some(tag) if count == 0 => format!("{tag}+{commit}"),
         Some(tag) => format!("{tag}-{count}-g{commit}"),
@@ -25,7 +18,8 @@ fn format(tag: Option<&str>, count: u64, commit: Option<&str>, dirty: bool, debu
     version
 }
 
-/// The version to show at startup and with `--version`.
+/// The version to show at startup, in the dashboard and with `--version`: the
+/// tag (or the package version) and the commit it was built from.
 pub fn full() -> &'static str {
     static FULL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FULL.get_or_init(|| {
@@ -47,10 +41,10 @@ mod tests {
     use super::format;
 
     #[test]
-    fn a_clean_tag_is_enough() {
+    fn a_clean_tag_still_names_the_commit() {
         assert_eq!(
             format(Some("v1.2.3"), 0, Some("abc1234"), false, false),
-            "v1.2.3"
+            "v1.2.3+abc1234"
         );
     }
 
@@ -67,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn a_debug_build_names_the_commit_even_on_a_tag() {
+    fn a_debug_build_is_marked() {
         assert_eq!(
             format(Some("v1.2.3"), 0, Some("abc1234"), false, true),
             "v1.2.3+abc1234-debug"
