@@ -32,7 +32,7 @@ pub const LOCAL_STT_MODELS: &[ModelSpec] = &[
         label: "Parakeet v2",
         description: "Accurate English transcription that runs well on a laptop CPU.",
         languages: &["en"],
-        size: 482_468_385,
+        size: 482_440_461,
         archive_url: archive!("sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"),
         dir: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
         engine: Engine::Transducer {
@@ -65,7 +65,7 @@ pub const LOCAL_STT_MODELS: &[ModelSpec] = &[
             "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv",
             "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
         ],
-        size: 487_170_055,
+        size: 487_211_443,
         archive_url: archive!("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
         dir: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
         engine: Engine::Transducer {
@@ -181,7 +181,8 @@ pub struct ModelSpec {
     pub label: &'static str,
     pub description: &'static str,
     pub languages: &'static [&'static str],
-    /// Exact size of the release archive, in bytes.
+    /// Size of the release archive, in bytes, shown before the download
+    /// starts. Upstream re-uploads archives, so it is only an estimate.
     pub size: u64,
     pub archive_url: &'static str,
     /// The directory the archive extracts to.
@@ -372,6 +373,11 @@ impl LocalSpeech {
         let mut file = tokio::fs::File::create(&archive_path)
             .await
             .map_err(|e| format!("cannot write {}: {e}", archive_path.display()))?;
+        if let Some(total) = response.content_length() {
+            if let Some(s) = self.downloads.lock().unwrap().get_mut(model.id) {
+                s.total = total;
+            }
+        }
         let mut response = response;
         let mut received = 0u64;
         while let Some(chunk) = response
@@ -391,13 +397,6 @@ impl LocalSpeech {
             .await
             .map_err(|e| format!("cannot write {}: {e}", archive_path.display()))?;
         drop(file);
-        if received != model.size {
-            let _ = tokio::fs::remove_file(&archive_path).await;
-            return Err(format!(
-                "{} downloaded {} bytes, expected {}; the release changed?",
-                model.label, received, model.size
-            ));
-        }
 
         let (models_dir, spec) = (self.models_dir.clone(), model);
         let archive = archive_path.clone();
