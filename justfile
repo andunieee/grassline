@@ -14,7 +14,8 @@ daemon-install:
     cargo install --path crates/daemon --locked
     install -Dm644 deploy/grasslined.service ~/.config/systemd/user/grasslined.service
     systemctl --user daemon-reload
-    systemctl --user enable --now grasslined
+    systemctl --user enable grasslined
+    systemctl --user restart grasslined
     @echo "grasslined is running; admin interface on hyperb://127.0.0.1:7878/"
 
 # Build the app and install it on every device connected through adb
