@@ -38,8 +38,6 @@ pub struct Admin {
     view: Option<Node>,
     /// The local model downloads as they were last drawn.
     downloads: String,
-    /// A local model the user picked Download for, waiting for a confirmation.
-    pending_download: Option<&'static str>,
 }
 
 fn sig(a: &Action, path: &str) -> String {
@@ -515,7 +513,7 @@ impl Admin {
         if local {
             return tab("tab-voice")
                 .label("Voice")
-                .child(self.local_voice(body, cfg));
+                .child(Self::local_voice(body, cfg));
         }
 
         let preset = SPEECH_PROVIDERS.iter().find(|p| p.name == t.provider);
@@ -568,138 +566,101 @@ impl Admin {
         tab("tab-voice").label("Voice").child(body)
     }
 
-    fn local_voice(&self, body: Node, cfg: &Config) -> Node {
-        let t = &cfg.transcription;
+    /// One picker for the model the app uses, and what that model needs.
+    fn local_voice(body: Node, cfg: &Config) -> Node {
         let options = LOCAL_STT_MODELS
             .iter()
             .map(|m| {
-                json!({
-                    "value": m.id,
-                    "label": format!("{} · {} · {}", m.label, size(m.size), language_summary(m.languages)),
-                })
+                let label = if core().speech.installed(m) {
+                    format!("{} · downloaded", m.label)
+                } else {
+                    format!("{} · {}", m.label, size(m.size))
+                };
+                json!({ "value": m.id, "label": label })
             })
             .collect::<Vec<_>>();
-        let rows = LOCAL_STT_MODELS.iter().enumerate().map(|(i, m)| {
-            let installed = core().speech.installed(m);
-            let download = core().speech.download_status(m.id);
-            let pending = self.pending_download == Some(m.id);
-            let (status, action) = if installed {
-                (
-                    format!("Downloaded · {}", language_summary(m.languages)),
-                    button(format!("local-model-{i}-delete"))
+        let m = cfg
+            .transcription
+            .local_model()
+            .or_else(|| find_model(DEFAULT_LOCAL_STT_MODEL))
+            .expect("the default model is in the catalog");
+        let (variant, state, action) = if core().speech.installed(m) {
+            (
+                "success",
+                format!("Downloaded · the app uses {}", m.label),
+                Some(
+                    button("local-model-delete")
                         .variant("failure")
                         .label("Delete")
                         .on_press(Handler::action("delete_model").payload(m.id)),
-                )
-            } else if let Some(d) = download {
-                let percent = d
-                    .received
-                    .saturating_mul(100)
-                    .checked_div(d.total)
-                    .unwrap_or(0);
-                if let Some(e) = d.error {
-                    (
-                        format!("Download failed: {e}"),
-                        button(format!("local-model-{i}-retry"))
+                ),
+            )
+        } else {
+            match core().speech.download_status(m.id) {
+                Some(d) if d.error.is_some() => (
+                    "failure",
+                    format!("Download failed: {}", d.error.unwrap_or_default()),
+                    Some(
+                        button("local-model-download")
                             .variant("primary")
                             .label("Retry")
                             .on_press(Handler::action("download_model").payload(m.id)),
-                    )
-                } else {
+                    ),
+                ),
+                Some(d) => {
+                    let percent = d
+                        .received
+                        .saturating_mul(100)
+                        .checked_div(d.total)
+                        .unwrap_or(0);
                     (
-                        format!(
-                            "Not downloaded · {} · {}",
-                            size(m.size),
-                            language_summary(m.languages)
-                        ),
-                        badge(format!("local-model-{i}-progress"))
-                            .variant("warning")
-                            .text(format!("Downloading… {percent}% of {}", size(m.size))),
+                        "warning",
+                        format!("Downloading… {percent}% of {}", size(d.total)),
+                        None,
                     )
                 }
-            } else if pending {
-                (
+                None => (
+                    "warning",
                     format!(
-                        "Download {}? It is {} and is stored on this computer.",
-                        m.label,
+                        "Needs a {} download before the app can use it",
                         size(m.size)
                     ),
-                    row(format!("local-model-{i}-confirm")).children([
-                        button(format!("local-model-{i}-confirm-yes"))
+                    Some(
+                        button("local-model-download")
                             .variant("primary")
                             .label(format!("Download {}", size(m.size)))
-                            .on_press(Handler::action("confirm_download").payload(m.id)),
-                        button(format!("local-model-{i}-confirm-no"))
-                            .variant("plain")
-                            .label("Cancel")
-                            .on_press(Handler::action("cancel_download").payload(m.id)),
-                    ]),
-                )
-            } else {
-                (
-                    format!(
-                        "Not downloaded · {} · {}",
-                        size(m.size),
-                        language_summary(m.languages)
+                            .on_press(Handler::action("download_model").payload(m.id)),
                     ),
-                    button(format!("local-model-{i}-download"))
-                        .variant("primary")
-                        .label("Download")
-                        .on_press(Handler::action("download_model").payload(m.id)),
-                )
-            };
-            row(format!("local-model-{i}"))
-                .justify("between")
-                .children([
-                    column(format!("local-model-{i}-text"))
-                        .child(
-                            text(format!("local-model-{i}-name"))
-                                .variant("h3")
-                                .text(m.label),
-                        )
-                        .child(caption(&format!("local-model-{i}-desc"), m.description))
-                        .child(caption(&format!("local-model-{i}-state"), status)),
-                    action,
-                ])
-        });
-        let state = match t.local_model() {
-            Some(model) if core().speech.installed(model) => {
-                format!("the app uses {}", model.label)
+                ),
             }
-            Some(model) => match core().speech.download_status(model.id) {
-                Some(status) if status.error.is_some() => {
-                    format!("{} download failed", model.label)
-                }
-                Some(_) => format!("{} is downloading", model.label),
-                None => format!("{} needs a download", model.label),
-            },
-            None => "pick a model".into(),
         };
         body.child(setting(
             select("local-model")
-                .label("Model on this computer")
+                .label("Model")
                 .options(Value::Array(options)),
             "local_model",
             "set_stt_model",
         ))
-        .child(heading("v-models-h", "Models"))
-        .children(rows)
         .child(
-            row("v-local-row").justify("between").children([
-                badge("stt-state")
-                    .variant(
-                        if t.local_model().is_some_and(|m| core().speech.installed(m)) {
-                            "success"
-                        } else {
-                            "warning"
-                        },
-                    )
-                    .text(state),
-                text("v-local-dir")
-                    .variant("caption")
-                    .text(core().speech.models_dir().display().to_string()),
-            ]),
+            card("local-model-card")
+                .title(m.label)
+                .child(caption("local-model-desc", m.description))
+                .child(caption(
+                    "local-model-langs",
+                    format!("Languages: {}", language_summary(m.languages)),
+                ))
+                .child(
+                    row("local-model-row").justify("between").children(
+                        [badge("stt-state").variant(variant).text(state)]
+                            .into_iter()
+                            .chain(action),
+                    ),
+                ),
         )
+        .child(caption(
+            "v-local-dir",
+            format!("Stored in {}", core().speech.models_dir().display()),
+        ))
     }
 
     /// The settings as they are, which every action answers with: it puts
@@ -921,17 +882,11 @@ impl App for Admin {
                     None => self.fail(format!("{id} is not a local speech model")),
                 }
             }
-            "download_model" => match find_model(&payload) {
-                Some(model) => self.pending_download = Some(model.id),
-                None => self.fail(format!("{payload} is not a local speech model")),
-            },
-            "confirm_download" => {
-                self.pending_download = None;
+            "download_model" => {
                 if let Err(e) = core.speech.start_download(&payload) {
                     self.fail(e);
                 }
             }
-            "cancel_download" => self.pending_download = None,
             "delete_model" => match core.speech.delete(&payload) {
                 Ok(()) => self.flash("Deleted"),
                 Err(e) => self.fail(e),
@@ -1087,21 +1042,25 @@ mod tests {
         l.write("machine_name", json!("Studio"));
         assert!(l.trigger("machine_name-go", "onPress"));
         assert_eq!(l.client.attr("stt-key", "bind"), None);
-        assert_eq!(
-            l.client.attr("local-model-0-download", "label"),
-            Some(json!("Download"))
-        );
         assert!(l.client.attr("local-model", "options").is_some());
-        // Downloading needs a second, explicit confirmation.
-        assert!(l.trigger("local-model-0-download", "onPress"));
+        // Only the picked model is shown, with what it still needs.
         assert_eq!(
-            l.client.attr("local-model-0-confirm-yes", "label"),
+            l.client.attr("local-model-card", "title"),
+            Some(json!("Parakeet v2"))
+        );
+        assert_eq!(
+            l.client.attr("local-model-download", "label"),
             Some(json!("Download 482 MB"))
         );
-        assert!(l.trigger("local-model-0-confirm-no", "onPress"));
+        l.write("local_model", json!({ "value": "whisper-tiny-en", "loading": false }));
+        assert!(l.trigger("local-model", "onChange"));
         assert_eq!(
-            l.client.attr("local-model-0-download", "label"),
-            Some(json!("Download"))
+            l.client.attr("local-model-card", "title"),
+            Some(json!("Whisper Tiny (English)"))
+        );
+        assert_eq!(
+            l.client.attr("local-model-download", "label"),
+            Some(json!("Download 118 MB"))
         );
 
         assert!(l.client.take_diagnostics().is_empty());
