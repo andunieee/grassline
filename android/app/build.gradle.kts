@@ -1,13 +1,45 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Set by the release workflow. Without a keystore the release build is signed
-// with the debug key, so it can still be installed (but not updated over a
-// build signed with another key).
-val releaseKeystore = System.getenv("GRASSLINE_KEYSTORE")?.takeIf { it.isNotBlank() }
+// Release signing. In priority order:
+//   1. environment variables (the release workflow sets GRASSLINE_*; local
+//      shells can set either name, e.g. by sourcing ~/android-release/env.sh)
+//   2. an optional shared properties file, by default
+//      ~/android-release/signing.properties, which other local Android
+//      projects can read too (override its path with ANDROID_SIGNING_PROPERTIES)
+//   3. the debug key, so assembleRelease still works without a key
+val signingPropertiesFile = File(
+    System.getenv("ANDROID_SIGNING_PROPERTIES")
+        ?: "${System.getProperty("user.home")}/android-release/signing.properties",
+)
+val sharedSigning = Properties().apply {
+    if (signingPropertiesFile.isFile) {
+        signingPropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun signingValue(envNames: List<String>, propertyName: String): String? =
+    envNames.firstNotNullOfOrNull { System.getenv(it)?.takeIf(String::isNotBlank) }
+        ?: sharedSigning.getProperty(propertyName)?.takeIf(String::isNotBlank)
+
+val releaseKeystore = signingValue(listOf("GRASSLINE_KEYSTORE", "ANDROID_KEYSTORE"), "storeFile")
+    ?.let { path ->
+        val file = File(path)
+        if (file.isAbsolute) file else File(signingPropertiesFile.absoluteFile.parentFile, path)
+    }
+val releaseKeystorePassword =
+    signingValue(listOf("GRASSLINE_KEYSTORE_PASSWORD", "ANDROID_KEYSTORE_PASSWORD"), "storePassword")
+val releaseKeyAlias = signingValue(listOf("GRASSLINE_KEY_ALIAS", "ANDROID_KEY_ALIAS"), "keyAlias")
+val releaseKeyPassword =
+    signingValue(listOf("GRASSLINE_KEY_PASSWORD", "ANDROID_KEY_PASSWORD"), "keyPassword")
+val hasReleaseSigning = releaseKeystore?.isFile == true &&
+    releaseKeystorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
+
 val versionCodeFromEnv = System.getenv("GRASSLINE_VERSION_CODE")?.toIntOrNull() ?: 1
 val versionNameFromEnv = System.getenv("GRASSLINE_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
 
@@ -28,12 +60,12 @@ android {
     }
 
     signingConfigs {
-        if (releaseKeystore != null) {
+        if (hasReleaseSigning) {
             create("release") {
-                storeFile = file(releaseKeystore)
-                storePassword = System.getenv("GRASSLINE_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("GRASSLINE_KEY_ALIAS")
-                keyPassword = System.getenv("GRASSLINE_KEY_PASSWORD")
+                storeFile = releaseKeystore
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -41,7 +73,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = if (releaseKeystore != null) {
+            signingConfig = if (hasReleaseSigning) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")
