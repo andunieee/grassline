@@ -7,7 +7,7 @@ mod jni_bridge;
 
 use grassline_proto::{
     encode, parse_ticket, Agent, ClientMsg, Frames, Message, Model, Permissions, Project,
-    ServerMsg, SessionInfo, Transcription, OUTDATED, VERSION,
+    ServerMsg, SessionInfo, SpeechConfig, OUTDATED, VERSION,
 };
 use iroh::endpoint::{presets, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -48,7 +48,7 @@ struct State {
     /// The archived sessions, once asked for.
     archived: Option<Vec<SessionInfo>>,
     /// Where voice messages are turned into text, if the daemon set it up.
-    transcription: Option<Transcription>,
+    transcription: Option<SpeechConfig>,
     /// The answer to a transcription request, while the app waits for it.
     transcription_result: Option<(String, Result<String, String>)>,
     /// The models of the agents they were asked for, by provider name.

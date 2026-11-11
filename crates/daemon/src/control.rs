@@ -343,7 +343,7 @@ fn agents(core: &Core) -> ServerMsg {
 
 fn transcription(core: &Core) -> ServerMsg {
     ServerMsg::Transcription {
-        config: core.config().transcription.resolve(),
+        config: core.config().transcription.resolve().map(Into::into),
     }
 }
 

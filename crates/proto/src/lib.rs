@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -178,6 +178,43 @@ pub enum Transcription {
     /// A model on the daemon's machine. The controller sends the audio to the
     /// daemon with [`ClientMsg::Transcribe`].
     Local { model: String },
+}
+
+/// A [`Transcription`] as it goes over the wire.
+///
+/// The protocol is postcard, which cannot deserialize the internally tagged
+/// enum above: it needs a flat struct. The controller shows this as the app's
+/// transcription setting, whose JSON shape is the same as the enum's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeechConfig {
+    /// "remote" or "local".
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub key: String,
+}
+
+impl From<Transcription> for SpeechConfig {
+    fn from(t: Transcription) -> Self {
+        match t {
+            Transcription::Remote { url, model, key } => SpeechConfig {
+                provider: "remote".into(),
+                url,
+                model,
+                key,
+            },
+            Transcription::Local { model } => SpeechConfig {
+                provider: "local".into(),
+                url: String::new(),
+                model,
+                key: String::new(),
+            },
+        }
+    }
 }
 
 /// A message waiting for the agent to finish its turn.
@@ -359,7 +396,7 @@ pub enum ServerMsg {
     },
     /// How to turn voice messages into text; `None` when it is not set up.
     Transcription {
-        config: Option<Transcription>,
+        config: Option<SpeechConfig>,
     },
     /// The answer to a [`ClientMsg::Transcribe`]. Exactly one of `text` and
     /// `error` is set.
@@ -512,6 +549,49 @@ mod tests {
                 "key": "k",
             })
         );
+        // The app's snapshot has the same flat shape, so the Kotlin side
+        // reads both the same way.
+        assert_eq!(
+            serde_json::to_value(SpeechConfig::from(remote)).unwrap(),
+            serde_json::json!({
+                "provider": "remote",
+                "url": "https://example.com/v1/audio/transcriptions",
+                "model": "whisper-1",
+                "key": "k",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(SpeechConfig::from(local)).unwrap(),
+            serde_json::json!({
+                "provider": "local",
+                "url": "",
+                "model": "parakeet-tdt-0.6b-v2-int8",
+                "key": "",
+            })
+        );
+    }
+
+    #[test]
+    fn transcriptions_survive_postcard() {
+        // The internally tagged enum is fine for JSON, but postcard needs the
+        // flat `SpeechConfig` to deserialize it.
+        for t in [
+            Transcription::Local {
+                model: "parakeet-tdt-0.6b-v2-int8".into(),
+            },
+            Transcription::Remote {
+                url: "https://example.com/v1/audio/transcriptions".into(),
+                model: "whisper-1".into(),
+                key: "k".into(),
+            },
+        ] {
+            let msg = ServerMsg::Transcription {
+                config: Some(t.into()),
+            };
+            let mut frames = Frames::default();
+            frames.push(&encode(&msg)).unwrap();
+            assert_eq!(frames.next::<ServerMsg>().unwrap(), Ok(msg));
+        }
     }
 
     #[test]
