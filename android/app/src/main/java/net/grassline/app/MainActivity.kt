@@ -677,43 +677,59 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                         }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (voice.phase == VoicePhase.Recording) {
-                        IconButton(voice::cancel) { Icon(Icons.Filled.Close, "Cancel") }
-                        RecordingTime(voice.started, Modifier.weight(1f))
-                    } else {
-                        OutlinedTextField(
-                            draft, { draft = it }, Modifier.weight(1f),
-                            placeholder = {
-                                Text(
-                                    when (voice.phase) {
-                                        VoicePhase.Uploading -> "Uploading…"
-                                        VoicePhase.Transcribing -> "Transcribing…"
-                                        else -> if (session.running) "Queue a message" else "Message"
-                                    },
-                                )
-                            },
-                            maxLines = 5, enabled = voice.phase == VoicePhase.Idle,
+                if (voice.phase == VoicePhase.Captured) {
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Captured recording of ${voice.capturedMinutes} minutes",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
                         )
+                        TextButton(voice::discard) { Text("Discard") }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { state.transcription?.let(voice::send) },
+                            enabled = state.status == "connected" && state.transcription != null,
+                        ) { Text("Send") }
                     }
-                    Spacer(Modifier.width(8.dp))
-                    when {
-                        voice.phase == VoicePhase.Recording -> Button(
-                            onClick = { state.transcription?.let(voice::finish) ?: voice.cancel() },
-                            enabled = state.status == "connected",
-                        ) { Text("Send") }
-                        voice.phase == VoicePhase.Uploading -> BusyLabel("Uploading…")
-                        voice.phase == VoicePhase.Transcribing -> BusyLabel("Transcribing…")
-                        // A voice message sent now waits in the queue.
-                        session.running && draft.isBlank() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (state.transcription != null) FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
-                            Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
+                } else {
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (voice.phase == VoicePhase.Recording) {
+                            IconButton(voice::cancel) { Icon(Icons.Filled.Close, "Cancel") }
+                            RecordingTime(voice.started, Modifier.weight(1f))
+                        } else {
+                            OutlinedTextField(
+                                draft, { draft = it }, Modifier.weight(1f),
+                                placeholder = {
+                                    Text(
+                                        when (voice.phase) {
+                                            VoicePhase.Uploading -> "Uploading…"
+                                            VoicePhase.Transcribing -> "Transcribing…"
+                                            else -> if (session.running) "Queue a message" else "Message"
+                                        },
+                                    )
+                                },
+                                maxLines = 5, enabled = voice.phase == VoicePhase.Idle,
+                            )
                         }
-                        draft.isBlank() && state.transcription != null -> FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
-                        else -> Button(
-                            onClick = { RustBridge.send(session.id, draft); draft = "" },
-                            enabled = draft.isNotBlank() && state.status == "connected",
-                        ) { Text("Send") }
+                        Spacer(Modifier.width(8.dp))
+                        when {
+                            voice.phase == VoicePhase.Recording -> Button(
+                                onClick = { state.transcription?.let(voice::finish) ?: voice.cancel() },
+                                enabled = state.status == "connected",
+                            ) { Text("Send") }
+                            voice.phase == VoicePhase.Uploading -> BusyLabel("Uploading…")
+                            voice.phase == VoicePhase.Transcribing -> BusyLabel("Transcribing…")
+                            // A voice message sent now waits in the queue.
+                            session.running && draft.isBlank() -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (state.transcription != null) FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
+                                Button({ RustBridge.stop(session.id) }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError)) { Text("Stop") }
+                            }
+                            draft.isBlank() && state.transcription != null -> FilledTonalIconButton(voice::start) { Icon(Glyphs.Mic, "Record") }
+                            else -> Button(
+                                onClick = { RustBridge.send(session.id, draft); draft = "" },
+                                enabled = draft.isNotBlank() && state.status == "connected",
+                            ) { Text("Send") }
+                        }
                     }
                 }
             }

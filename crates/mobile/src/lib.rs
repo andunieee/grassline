@@ -7,7 +7,7 @@ mod jni_bridge;
 
 use grassline_proto::{
     encode, parse_ticket, Agent, ClientMsg, Frames, Message, Model, Permissions, Project,
-    ServerMsg, SessionInfo, SpeechConfig, OUTDATED, VERSION,
+    ServerMsg, SessionInfo, SpeechConfig, MAX_VOICE_AUDIO, OUTDATED, VERSION, VOICE_CHUNK,
 };
 use iroh::endpoint::{presets, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -312,7 +312,7 @@ impl Controller {
         if audio.is_empty() {
             return Err("nothing was recorded".into());
         }
-        if audio.len() > 15 * 1024 * 1024 {
+        if audio.len() > MAX_VOICE_AUDIO {
             return Err("the voice message is too long".into());
         }
         let request = format!("voice-{}", random_hex(8));
@@ -320,10 +320,16 @@ impl Controller {
             return Err("not connected to the daemon".into());
         }
         self.shared.edit(|s| s.transcription_result = None);
-        self.send(ClientMsg::Transcribe {
-            request: request.clone(),
-            audio,
-        });
+        let pieces = audio.chunks(VOICE_CHUNK);
+        let count = pieces.len();
+        for (i, piece) in pieces.enumerate() {
+            self.send(ClientMsg::Transcribe {
+                request: request.clone(),
+                audio: piece.to_vec(),
+                last: i + 1 == count,
+            });
+        }
+        drop(audio);
         let s = self.shared.state.lock().unwrap();
         let (s, wait) = self
             .shared

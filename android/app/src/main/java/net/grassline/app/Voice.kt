@@ -4,8 +4,12 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Row
@@ -36,6 +40,14 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
+/** How long a voice message may record before it stops itself.
+ *  Keep this in sync with MAX_VOICE_SECONDS in grassline-proto. */
+const val MAX_VOICE_MINUTES = 15
+
+/** 16 kHz mono, 16-bit PCM, as [VoiceRecorder] records it. */
+private const val VOICE_BYTES_PER_SECOND = 16_000 * 2
+private const val MAX_VOICE_BYTES = MAX_VOICE_MINUTES * 60 * VOICE_BYTES_PER_SECOND
+
 /** Records a voice message as a 16 kHz mono WAV file in the cache. */
 class VoiceRecorder(private val context: Context) {
     private var recorder: AudioRecord? = null
@@ -45,6 +57,10 @@ class VoiceRecorder(private val context: Context) {
 
     @Volatile
     private var recording = false
+
+    /** Called from the recording thread when the length limit stopped it. */
+    @Volatile
+    var onLimit: () -> Unit = {}
 
     /** Starts recording; throws when the microphone cannot be used. */
     fun start() {
@@ -84,12 +100,23 @@ class VoiceRecorder(private val context: Context) {
         }
         recording = true
         val t = Thread {
+            var written = 0L
             try {
                 raw.outputStream().buffered().use { out ->
                     val buffer = ByteArray(bufferSize)
                     while (recording) {
                         val n = r.read(buffer, 0, buffer.size)
-                        if (n > 0) out.write(buffer, 0, n)
+                        if (n <= 0) continue
+                        val room = MAX_VOICE_BYTES - written
+                        if (room <= 0) break
+                        // Stop at the limit even in the middle of a read.
+                        val take = minOf(n.toLong(), room).toInt()
+                        out.write(buffer, 0, take)
+                        written += take
+                        if (written >= MAX_VOICE_BYTES) {
+                            recording = false
+                            onLimit()
+                        }
                     }
                 }
             } catch (_: Exception) {
@@ -105,7 +132,8 @@ class VoiceRecorder(private val context: Context) {
 
     /** Stops recording; returns the WAV file, or null when nothing was recorded. */
     fun stop(): File? {
-        if (!recording) return null
+        // Also when the length limit already stopped the thread.
+        if (file == null) return null
         recording = false
         // stop() unblocks a read() that is waiting for the microphone.
         recorder?.let { runCatching { it.stop() } }
@@ -170,6 +198,15 @@ private fun DataOutputStream.le32(v: Int) {
     write((v ushr 24) and 0xff)
 }
 
+/** A beep so the user knows recording stopped at the limit. */
+private fun beep(context: Context) {
+    runCatching {
+        val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
+        tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 200)
+        Handler(Looper.getMainLooper()).postDelayed({ tone.release() }, 1_000)
+    }
+}
+
 /** Turns [audio] into text with the daemon's local model.
  *  [onUploaded] tells when the audio is sent and the answer is being waited for. */
 suspend fun transcribeLocal(audio: File, onUploaded: () -> Unit = {}): String = withContext(Dispatchers.IO) {
@@ -221,7 +258,7 @@ suspend fun transcribe(t: Transcription, audio: File, onUploaded: () -> Unit = {
     }
 }
 
-enum class VoicePhase { Idle, Recording, Uploading, Transcribing }
+enum class VoicePhase { Idle, Recording, Captured, Uploading, Transcribing }
 
 /** A voice message on its way: recorded, then turned into text for [onText]. */
 class VoiceState(private val id: String, private val context: Context, private val scope: CoroutineScope, private val onText: (String) -> Unit) {
@@ -238,12 +275,22 @@ class VoiceState(private val id: String, private val context: Context, private v
     internal var shown = false
     /** The chat was left with this as all it has: it closes once this is over. */
     internal var closeWhenDone = false
+    /** The recording that stopped at the limit, waiting to be sent or discarded. */
+    private var captured: File? = null
+    /** How long that recording is, in minutes. */
+    var capturedMinutes by mutableIntStateOf(0)
+        private set
+
+    init {
+        recorder.onLimit = { scope.launch { captureLimit() } }
+    }
 
     /** It is on its way to the agent, so leaving the chat must not drop it. */
     val busy: Boolean get() = phase == VoicePhase.Uploading || phase == VoicePhase.Transcribing
 
     fun start() {
         error = null
+        discard()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) begin()
         else askPermission()
     }
@@ -260,17 +307,59 @@ class VoiceState(private val id: String, private val context: Context, private v
 
     fun cancel() {
         recorder.cancel()
+        discard()
         if (phase == VoicePhase.Recording) phase = VoicePhase.Idle
     }
 
     /** Stops recording and sends what was said, once [t] turned it into text. */
     fun finish(t: Transcription) {
+        // The limit may have stopped it just as Send was tapped.
+        if (captured != null) {
+            send(t)
+            return
+        }
         val audio = recorder.stop()
         if (audio == null) {
             phase = VoicePhase.Idle
             error = "nothing was recorded"
             return
         }
+        upload(t, audio)
+    }
+
+    /** Sends the recording that stopped at the limit, once [t] turned it into text. */
+    fun send(t: Transcription) {
+        val audio = captured ?: return
+        captured = null
+        capturedMinutes = 0
+        upload(t, audio)
+    }
+
+    /** Throws away the recording that stopped at the limit. */
+    fun discard() {
+        captured?.delete()
+        captured = null
+        capturedMinutes = 0
+        if (phase == VoicePhase.Captured) phase = VoicePhase.Idle
+    }
+
+    /** The recorder reached its length limit: keep the file for send or discard. */
+    private fun captureLimit() {
+        if (phase != VoicePhase.Recording) return
+        val audio = recorder.stop()
+        if (audio == null) {
+            phase = VoicePhase.Idle
+            error = "nothing was recorded"
+            return
+        }
+        captured?.delete()
+        captured = audio
+        capturedMinutes = MAX_VOICE_MINUTES
+        phase = VoicePhase.Captured
+        beep(context)
+    }
+
+    private fun upload(t: Transcription, audio: File) {
         phase = VoicePhase.Uploading
         scope.launch {
             try {

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -311,11 +311,15 @@ pub enum ClientMsg {
     Models {
         provider: String,
     },
-    /// Turns a voice message into text with the daemon's local speech model;
-    /// answered with [`ServerMsg::Transcribed`]. `audio` is a 16 kHz mono WAV.
+    /// One piece of a voice message, turned into text with the daemon's local
+    /// speech model. The pieces of a 16 kHz mono WAV arrive in order, each at
+    /// most [`VOICE_CHUNK`] bytes, the last with `last` set; together they are
+    /// answered once with [`ServerMsg::Transcribed`].
     Transcribe {
         request: String,
         audio: Vec<u8>,
+        /// This is the last piece of `request`.
+        last: bool,
     },
     /// Puts session `id` in the archive, or takes it out. Sending it a
     /// message takes it out too.
@@ -437,8 +441,20 @@ pub enum ServerMsg {
     },
 }
 
-/// The most a stream may hold back before a frame is whole. Voice messages
-/// carry audio, so this is larger than the usual message.
+/// How long a voice message may be, in seconds. Keep this in sync with
+/// `MAX_VOICE_MINUTES` in the Android app.
+pub const MAX_VOICE_SECONDS: usize = 15 * 60;
+
+/// The most audio a single voice message may carry, in bytes: [`MAX_VOICE_SECONDS`]
+/// of 16 kHz mono 16-bit PCM, with room for the WAV header.
+pub const MAX_VOICE_AUDIO: usize = MAX_VOICE_SECONDS * 32_000 + 4 * 1024;
+
+/// The most audio one [`ClientMsg::Transcribe`] piece carries.
+pub const VOICE_CHUNK: usize = 1 << 20;
+
+/// The most a stream may hold back before a frame is whole. A voice message
+/// goes in [`VOICE_CHUNK`] pieces, so this leaves room for the other messages,
+/// like a long session's history.
 const MAX_PENDING: usize = 16 << 20;
 
 /// `m` as a frame: its length as a little-endian `u32`, then `m` in postcard.
@@ -511,6 +527,16 @@ mod tests {
             }
         }
         assert_eq!(got, [a, b]);
+    }
+
+    #[test]
+    fn voice_pieces_fit_a_frame() {
+        let piece = ClientMsg::Transcribe {
+            request: "voice-0123456789abcdef".into(),
+            audio: vec![0; VOICE_CHUNK],
+            last: false,
+        };
+        assert!(encode(&piece).len() <= VOICE_CHUNK + 1024);
     }
 
     #[test]

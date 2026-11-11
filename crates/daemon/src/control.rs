@@ -3,9 +3,9 @@
 
 use crate::core::{Core, Update};
 use crate::iroh::chain;
-use grassline_proto::{encode, ClientMsg, Frames, Message, ServerMsg};
+use grassline_proto::{encode, ClientMsg, Frames, Message, ServerMsg, MAX_VOICE_AUDIO};
 use iroh::endpoint::{RecvStream, SendStream};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -57,6 +57,8 @@ pub async fn serve(
     let mut updates = core.subscribe();
     let mut changes = core.watch_config();
     let mut opened = Opened::new(core.clone());
+    // The voice messages that are still arriving, by request.
+    let mut uploads = HashMap::<String, Vec<u8>>::new();
     // Answers that take a while, like the models.
     let (later, mut late) = mpsc::unbounded_channel::<ServerMsg>();
     write(&mut send, &projects(&core)).await?;
@@ -64,14 +66,14 @@ pub async fn serve(
     write(&mut send, &transcription(&core)).await?;
     write(&mut send, &sessions(&core)).await?;
     if let Some(m) = pending {
-        handle(&core, &mut send, &mut opened, &later, m).await?;
+        handle(&core, &mut send, &mut opened, &mut uploads, &later, m).await?;
     }
     loop {
         tokio::select! {
             m = read(&mut frames, &mut recv) => {
                 let Some(m) = m? else { return Ok(()) };
                 match m {
-                    Ok(m) => handle(&core, &mut send, &mut opened, &later, m).await?,
+                    Ok(m) => handle(&core, &mut send, &mut opened, &mut uploads, &later, m).await?,
                     Err(message) => write(&mut send, &ServerMsg::Error { message }).await?,
                 }
             }
@@ -124,6 +126,7 @@ async fn handle(
     core: &Arc<Core>,
     send: &mut SendStream,
     opened: &mut Opened,
+    uploads: &mut HashMap<String, Vec<u8>>,
     later: &mpsc::UnboundedSender<ServerMsg>,
     msg: ClientMsg,
 ) -> Result<(), String> {
@@ -171,23 +174,56 @@ async fn handle(
                 });
             });
         }
-        ClientMsg::Transcribe { request, audio } => {
-            let (core, later) = (core.clone(), later.clone());
-            tokio::spawn(async move {
-                let msg = match core.transcribe_audio(audio).await {
-                    Ok(text) => ServerMsg::Transcribed {
-                        request,
-                        text: Some(text),
-                        error: None,
-                    },
-                    Err(error) => ServerMsg::Transcribed {
+        ClientMsg::Transcribe {
+            request,
+            audio,
+            last,
+        } => {
+            let held = uploads.get(&request).map_or(0, Vec::len);
+            if audio.len() > MAX_VOICE_AUDIO.saturating_sub(held) {
+                uploads.remove(&request);
+                write(
+                    send,
+                    &ServerMsg::Transcribed {
                         request,
                         text: None,
-                        error: Some(error),
+                        error: Some("the voice message is too long".into()),
                     },
-                };
-                let _ = later.send(msg);
-            });
+                )
+                .await?;
+            } else {
+                uploads
+                    .entry(request.clone())
+                    .or_default()
+                    .extend_from_slice(&audio);
+                if last {
+                    let audio = uploads.remove(&request).unwrap_or_default();
+                    let (core, later) = (core.clone(), later.clone());
+                    tokio::spawn(async move {
+                        let msg = if audio.is_empty() {
+                            ServerMsg::Transcribed {
+                                request,
+                                text: None,
+                                error: Some("nothing was recorded".into()),
+                            }
+                        } else {
+                            match core.transcribe_audio(audio).await {
+                                Ok(text) => ServerMsg::Transcribed {
+                                    request,
+                                    text: Some(text),
+                                    error: None,
+                                },
+                                Err(error) => ServerMsg::Transcribed {
+                                    request,
+                                    text: None,
+                                    error: Some(error),
+                                },
+                            }
+                        };
+                        let _ = later.send(msg);
+                    });
+                }
+            }
         }
         ClientMsg::Create { project, provider } => {
             match core.create_session(&project, provider.as_deref()) {
