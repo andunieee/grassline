@@ -7,7 +7,8 @@ mod jni_bridge;
 
 use grassline_proto::{
     encode, parse_ticket, Agent, ClientMsg, Frames, Message, Model, Permissions, Project,
-    ServerMsg, SessionInfo, SpeechConfig, MAX_VOICE_AUDIO, OUTDATED, VERSION, VOICE_CHUNK,
+    Resumable, ServerMsg, SessionInfo, SpeechConfig, MAX_VOICE_AUDIO, OUTDATED, VERSION,
+    VOICE_CHUNK,
 };
 use iroh::endpoint::{presets, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointId, SecretKey};
@@ -53,6 +54,9 @@ struct State {
     transcription_result: Option<(String, Result<String, String>)>,
     /// The models of the agents they were asked for, by provider name.
     models: HashMap<String, Models>,
+    /// The past conversations each session could take up, by session id, for
+    /// the sessions they were asked for.
+    resumable: HashMap<String, Resumables>,
     /// The messages of the sessions that are open.
     messages: HashMap<String, Vec<Message>>,
     /// The last error the daemon reported.
@@ -65,6 +69,14 @@ struct State {
 #[derive(Debug, Clone, Default, Serialize)]
 struct Models {
     items: Vec<Model>,
+    error: Option<String>,
+    /// They were asked for and have not arrived yet.
+    loading: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct Resumables {
+    items: Vec<Resumable>,
     error: Option<String>,
     /// They were asked for and have not arrived yet.
     loading: bool,
@@ -169,6 +181,11 @@ impl Shared {
         if self.state.lock().unwrap().messages.contains_key(id) {
             self.edit(|s| {
                 s.messages.remove(id);
+            });
+        }
+        if self.state.lock().unwrap().resumable.contains_key(id) {
+            self.edit(|s| {
+                s.resumable.remove(id);
             });
         }
     }
@@ -415,6 +432,29 @@ impl Controller {
         });
     }
 
+    /// Asks the daemon for the past conversations session `id` could take
+    /// up; they show up in the snapshot.
+    pub fn resumable(&self, id: &str) {
+        self.shared.edit(|s| {
+            let r = s.resumable.entry(id.into()).or_default();
+            r.loading = true;
+            r.error = None;
+        });
+        self.send(ClientMsg::Resumable { id: id.into() });
+    }
+
+    /// Takes up one of those conversations in session `id`, which has no
+    /// messages yet; they arrive as its history.
+    pub fn resume(&self, id: &str, conversation: &str) {
+        self.shared.edit(|s| {
+            s.resumable.remove(id);
+        });
+        self.send(ClientMsg::Resume {
+            id: id.into(),
+            conversation: conversation.into(),
+        });
+    }
+
     /// Puts a session in the archive, or takes it out.
     pub fn archive(&self, id: &str, archived: bool) {
         self.send(ClientMsg::Archive {
@@ -492,7 +532,9 @@ impl Controller {
     /// The state as JSON: `status`, `reason`, `projects`, `roots` (where new
     /// projects can go), `agents` (with
     /// whether each is installed and `steers`), `default_agent`, `models` (by
-    /// agent: `items`, `error` and `loading`), `sessions` (most recent first,
+    /// agent: `items`, `error` and `loading`), `resumable` (by session id, the
+    /// past conversations it could take up, each with its `id`, `title` and
+    /// `updated`, as `items`, `error` and `loading`), `sessions` (most recent first,
     /// each with its `model`, `permissions` and `queue`), `archived` (the
     /// same, or null until asked for), `transcription` (`provider`, and `url`, `model` and `key`
     /// for a remote endpoint, or just `model` for a local one; null when off), `messages` (by session id; a tool call's `tool` has its
@@ -511,6 +553,7 @@ impl Controller {
         o.insert("agents".into(), json!(s.agents));
         o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("models".into(), json!(s.models));
+        o.insert("resumable".into(), json!(s.resumable));
         o.insert("sessions".into(), json!(s.sessions));
         o.insert("archived".into(), json!(s.archived));
         o.insert("transcription".into(), json!(s.transcription));
@@ -735,6 +778,16 @@ fn apply(shared: &Shared, msg: ServerMsg) {
                     loading: false,
                 },
             );
+        }
+        ServerMsg::Resumable { id, items, error } => {
+            // Unless the session was left meanwhile.
+            if let Some(r) = s.resumable.get_mut(&id) {
+                *r = Resumables {
+                    items,
+                    error,
+                    loading: false,
+                };
+            }
         }
         ServerMsg::Transcription { config } => s.transcription = config,
         ServerMsg::Transcribed {

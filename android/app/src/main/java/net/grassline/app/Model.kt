@@ -19,6 +19,12 @@ data class AgentModel(val id: String, val name: String, val description: String)
 /** An agent's models, once asked for with [RustBridge.models]. */
 data class ModelList(val items: List<AgentModel>, val error: String?, val loading: Boolean)
 
+/** A session the agent had before in a project, outside Grassline or in a session since deleted. */
+data class PastSession(val id: String, val title: String, val updated: Long)
+
+/** The past sessions a session could take up, once asked for with [RustBridge.resumable]. */
+data class PastSessions(val items: List<PastSession>, val error: String?, val loading: Boolean)
+
 /** A message waiting for the agent's turn to end; [steering] once the agent was given it but has not taken it in yet. */
 data class Queued(val id: String, val text: String, val steering: Boolean)
 
@@ -120,6 +126,8 @@ data class AppState(
     val defaultAgent: String = "",
     /** By agent; only the ones asked for. */
     val models: Map<String, ModelList> = emptyMap(),
+    /** By session id; only the ones asked for. */
+    val resumable: Map<String, PastSessions> = emptyMap(),
     /** Most recent first; not the archived ones. */
     val sessions: List<SessionInfo> = emptyList(),
     /** The archived sessions, most recent first; null until asked for with [RustBridge.archived]. */
@@ -157,6 +165,16 @@ data class AppState(
                         val l = m.getJSONObject(k)
                         ModelList(
                             l.optJSONArray("items").map { AgentModel(it.getString("id"), it.getString("name"), it.optString("description")) },
+                            l.optStringOrNull("error"),
+                            l.optBoolean("loading"),
+                        )
+                    }
+                } ?: emptyMap(),
+                resumable = o.optJSONObject("resumable")?.let { r ->
+                    r.keys().asSequence().associateWith { k ->
+                        val l = r.getJSONObject(k)
+                        PastSessions(
+                            l.optJSONArray("items").map { PastSession(it.getString("id"), it.optString("title"), it.optLong("updated")) },
                             l.optStringOrNull("error"),
                             l.optBoolean("loading"),
                         )

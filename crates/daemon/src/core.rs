@@ -2,17 +2,17 @@
 
 use crate::config::Config;
 use crate::local_speech::LocalSpeech;
-use grassline_agents::{Answer, Event, Provider, Turn};
+use grassline_agents::{Answer, Entry, Event, Logged, Provider, Turn};
 use grassline_proto::{
-    Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Queued, Role,
-    SessionInfo, ToolCall, ToolStatus,
+    Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Queued,
+    Resumable, Role, SessionInfo, ToolCall, ToolStatus, RESUMABLE_MAX,
 };
 
 /// The requests the agent waits for: the tool call's message index, and the
 /// tool.
 type Asks = HashMap<String, (usize, String)>;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -37,6 +37,8 @@ pub enum Update {
     Removed(String),
     /// A project was added.
     Projects,
+    /// The session's messages were all replaced.
+    History(String),
     Msg {
         id: String,
         index: usize,
@@ -520,6 +522,81 @@ impl Core {
         self.save(&info.id);
         let _ = self.updates.send(Update::Session(info.clone()));
         Ok(info)
+    }
+
+    /// The conversations the agent of session `id` had before in its
+    /// directory and no session has, newest first.
+    pub async fn resumable(&self, id: &str) -> Result<Vec<Resumable>, String> {
+        let (provider, path) = self.agent_of(id)?;
+        let taken: HashSet<String> = self.provider_sessions().into_values().collect();
+        let past = provider
+            .past(
+                &self.config().options(provider),
+                &path,
+                &taken,
+                RESUMABLE_MAX,
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "could not list the conversations of {}: {e}",
+                    provider.name()
+                )
+            })?;
+        Ok(past
+            .into_iter()
+            .map(|p| Resumable {
+                id: p.id,
+                title: p.title,
+                updated: p.updated,
+            })
+            .collect())
+    }
+
+    /// Takes up conversation `conversation` of its agent in session `id`,
+    /// which has nothing in it yet: what was said in it becomes the
+    /// session's messages, and the next message goes on with it.
+    pub async fn resume(&self, id: &str, conversation: &str) -> Result<(), String> {
+        let (provider, path) = self.agent_of(id)?;
+        if self.provider_sessions().values().any(|c| c == conversation) {
+            return Err("another session has that conversation".into());
+        }
+        let history = provider
+            .history(&self.config().options(provider), &path, conversation)
+            .await
+            .map_err(|e| format!("could not read that conversation: {e}"))?;
+        let messages = resumed(history);
+        let info = {
+            let mut map = self.sessions.lock().unwrap();
+            let s = map.get_mut(id).ok_or("no such session")?;
+            // It may have been used while the conversation was read.
+            let fresh = s.messages.is_empty() && s.info.queue.is_empty() && !s.info.running;
+            if !fresh || s.provider_session.is_some() || s.info.provider != provider.name() {
+                return Err("the session is not empty any more".into());
+            }
+            s.provider_session = Some(conversation.into());
+            s.info.title = messages
+                .iter()
+                .find(|m| m.role == Role::User)
+                .map(|m| first_line(&m.text))
+                .unwrap_or_default();
+            s.info.preview = preview_of(&messages);
+            s.info.updated = now_ms();
+            s.messages = messages;
+            s.info.clone()
+        };
+        self.save(id);
+        let _ = self.updates.send(Update::History(id.into()));
+        let _ = self.updates.send(Update::Session(info));
+        Ok(())
+    }
+
+    /// The agent of session `id` and its directory.
+    fn agent_of(&self, id: &str) -> Result<(Provider, PathBuf), String> {
+        let map = self.sessions.lock().unwrap();
+        let s = map.get(id).ok_or("no such session")?;
+        let provider = Provider::from_name(&s.info.provider).ok_or("unknown agent")?;
+        Ok((provider, s.info.path.clone().into()))
     }
 
     /// A controller opened session `id`: it is read, and stays so while
@@ -1165,6 +1242,73 @@ fn settle_tools(messages: &mut [Message]) -> Vec<usize> {
     out
 }
 
+/// The messages of a past conversation: the agent's text runs together until
+/// a tool call, and each tool call ends with its result.
+fn resumed(history: Vec<Logged>) -> Vec<Message> {
+    let mut messages: Vec<Message> = vec![];
+    let mut tools = HashMap::<String, usize>::new();
+    let mut appending = false;
+    for Logged { ts, entry } in history {
+        let message = |role, text| Message {
+            role,
+            text,
+            ts,
+            tool: None,
+        };
+        match entry {
+            Entry::User(text) => {
+                messages.push(message(Role::User, text));
+                appending = false;
+            }
+            Entry::Text(text) => match messages.last_mut() {
+                Some(m) if appending => {
+                    m.text.push_str("\n\n");
+                    m.text.push_str(&text);
+                    m.ts = ts;
+                }
+                _ => {
+                    messages.push(message(Role::Assistant, text));
+                    appending = true;
+                }
+            },
+            Entry::Tool {
+                id,
+                name,
+                summary,
+                input,
+            } => {
+                appending = false;
+                tools.insert(id.clone(), messages.len());
+                messages.push(Message {
+                    tool: Some(ToolCall {
+                        id,
+                        name,
+                        input: pretty(&input),
+                        status: ToolStatus::Running,
+                        output: None,
+                        ask: None,
+                    }),
+                    ..message(Role::Tool, summary)
+                });
+            }
+            Entry::ToolResult { id, output, error } => {
+                let tool = tools.get(&id).and_then(|&i| messages[i].tool.as_mut());
+                if let Some(t) = tool {
+                    t.status = if error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    };
+                    t.output = Some(clip(&output));
+                }
+            }
+        }
+    }
+    // What has no result was cut short.
+    settle_tools(&mut messages);
+    messages
+}
+
 fn question(q: grassline_agents::Question) -> Question {
     Question {
         question: q.question,
@@ -1606,6 +1750,112 @@ while True:
         .await;
         assert_eq!(texts(&core, &id)[5].1, "three");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_empty_session_takes_up_a_past_conversation() {
+        let (core, id, dir) = core("resume");
+        let project = dir.join("project");
+        // Claude Code's transcripts of the project, as it keeps them.
+        let claude = dir.join("claude-config");
+        let encoded: String = project
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let transcripts = claude.join("projects").join(encoded);
+        std::fs::create_dir_all(&transcripts).unwrap();
+        let line = |v: serde_json::Value| v.to_string() + "\n";
+        std::fs::write(
+            transcripts.join("c1.jsonl"),
+            line(serde_json::json!({"type": "user", "message": {"role": "user", "content": "old question"}}))
+                + &line(serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "old answer"}]}}))
+                + &line(serde_json::json!({"type": "ai-title", "aiTitle": "An old talk"})),
+        )
+        .unwrap();
+        // No other test reads it.
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+
+        let offered = core.resumable(&id).await.unwrap();
+        assert_eq!(offered.len(), 1);
+        assert_eq!(
+            (offered[0].id.as_str(), offered[0].title.as_str()),
+            ("c1", "An old talk")
+        );
+
+        assert!(core.resume(&id, "nope").await.is_err());
+        core.resume(&id, "c1").await.unwrap();
+        assert_eq!(
+            texts(&core, &id),
+            vec![
+                (Role::User, "old question".into()),
+                (Role::Assistant, "old answer".into())
+            ]
+        );
+        assert_eq!(info(&core, &id).title, "old question");
+        assert_eq!(info(&core, &id).preview, "old answer");
+        // A conversation a session has is not offered again, and a session
+        // that has messages cannot take one up.
+        let other = core
+            .create_session(&project.to_string_lossy(), Some("claude"))
+            .unwrap()
+            .id;
+        assert!(core.resumable(&other).await.unwrap().is_empty());
+        assert!(core.resume(&other, "c1").await.is_err());
+        core.delete_session(&other);
+        // The agent goes on with it, without being told what happened.
+        core.send(&id, "more").unwrap();
+        until("the answer", || !info(&core, &id).running).await;
+        assert_eq!(texts(&core, &id)[3], (Role::Assistant, "more".into()));
+        assert_eq!(
+            core.provider_sessions().get(&id).map(String::as_str),
+            Some("s1")
+        );
+        assert!(core.resume(&id, "c1").await.is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn past_tool_calls_end_with_their_result() {
+        let at = |ts, entry| Logged { ts, entry };
+        let tool = |id: &str| Entry::Tool {
+            id: id.into(),
+            name: "Bash".into(),
+            summary: format!("Bash: {id}"),
+            input: serde_json::json!({}),
+        };
+        let m = resumed(vec![
+            at(1, Entry::User("hi".into())),
+            at(2, Entry::Text("one".into())),
+            at(3, Entry::Text("two".into())),
+            at(4, tool("t1")),
+            at(5, tool("t2")),
+            at(
+                6,
+                Entry::ToolResult {
+                    id: "t1".into(),
+                    output: "ok".into(),
+                    error: false,
+                },
+            ),
+            at(7, Entry::Text("three".into())),
+        ]);
+        let roles: Vec<_> = m.iter().map(|m| (m.role, m.text.as_str(), m.ts)).collect();
+        assert_eq!(
+            roles,
+            [
+                (Role::User, "hi", 1),
+                (Role::Assistant, "one\n\ntwo", 3),
+                (Role::Tool, "Bash: t1", 4),
+                (Role::Tool, "Bash: t2", 5),
+                (Role::Assistant, "three", 7),
+            ]
+        );
+        let status = |i: usize| m[i].tool.as_ref().unwrap().status;
+        assert_eq!(status(2), ToolStatus::Done);
+        assert_eq!(m[2].tool.as_ref().unwrap().output.as_deref(), Some("ok"));
+        // It never got one.
+        assert_eq!(status(3), ToolStatus::Failed);
     }
 
     #[test]

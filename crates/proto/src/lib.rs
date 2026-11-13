@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -217,6 +217,20 @@ impl From<Transcription> for SpeechConfig {
     }
 }
 
+/// A conversation the agent of a session had before in its directory, which
+/// the session can take up with [`ClientMsg::Resume`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Resumable {
+    /// The agent's id for it.
+    pub id: String,
+    pub title: String,
+    /// Milliseconds since the Unix epoch.
+    pub updated: u64,
+}
+
+/// How many [`Resumable`] conversations the daemon offers, the newest.
+pub const RESUMABLE_MAX: usize = 5;
+
 /// A message waiting for the agent to finish its turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queued {
@@ -333,6 +347,19 @@ pub enum ClientMsg {
     Delete {
         id: String,
     },
+    /// Asks for the conversations session `id`'s agent had before in its
+    /// directory, which no session has; answered with
+    /// [`ServerMsg::Resumable`].
+    Resumable {
+        id: String,
+    },
+    /// Takes up one of those conversations in session `id`, which must have
+    /// no messages yet: they become the agent's, and the next message goes
+    /// on with it.
+    Resume {
+        id: String,
+        conversation: String,
+    },
     /// Starts receiving the messages of a session; it is read from then on.
     Open {
         id: String,
@@ -416,6 +443,13 @@ pub enum ServerMsg {
     /// The archived sessions, most recently updated first.
     Archived {
         items: Vec<SessionInfo>,
+    },
+    /// The answer to a [`ClientMsg::Resumable`]: at most [`RESUMABLE_MAX`],
+    /// newest first, or why they could not be listed.
+    Resumable {
+        id: String,
+        items: Vec<Resumable>,
+        error: Option<String>,
     },
     /// One session changed or was created; it may have gone in or out of the
     /// archive.

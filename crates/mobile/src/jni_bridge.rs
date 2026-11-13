@@ -121,6 +121,8 @@ simple! {
         }
     };
     Java_net_grassline_app_RustBridge_models(provider) => |c, provider| c.models(&provider);
+    Java_net_grassline_app_RustBridge_resumable(id) => |c, id| c.resumable(&id);
+    Java_net_grassline_app_RustBridge_resume(id, conversation) => |c, id, conversation| c.resume(&id, &conversation);
     Java_net_grassline_app_RustBridge_open(id) => |c, id| c.open(&id);
     Java_net_grassline_app_RustBridge_close(id) => |c, id| c.close(&id);
     Java_net_grassline_app_RustBridge_delete(id) => |c, id| c.delete(&id);

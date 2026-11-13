@@ -81,6 +81,12 @@ pub async fn serve(
             u = updates.recv() => match u {
                 Ok(Update::Session(info)) => write(&mut send, &ServerMsg::Session { info }).await?,
                 Ok(Update::Projects) => write(&mut send, &projects(&core)).await?,
+                Ok(Update::History(id)) => {
+                    if opened.ids.contains(&id) {
+                        let messages = core.messages(&id).unwrap_or_default();
+                        write(&mut send, &ServerMsg::History { id, messages }).await?;
+                    }
+                }
                 Ok(Update::Removed(id)) => {
                     opened.remove(&id);
                     write(&mut send, &ServerMsg::Removed { id }).await?;
@@ -172,6 +178,25 @@ async fn handle(
                     items,
                     error,
                 });
+            });
+        }
+        ClientMsg::Resumable { id } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                let (items, error) = match core.resumable(&id).await {
+                    Ok(items) => (items, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                let _ = later.send(ServerMsg::Resumable { id, items, error });
+            });
+        }
+        // The new history goes to whoever has the session open.
+        ClientMsg::Resume { id, conversation } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                if let Err(message) = core.resume(&id, &conversation).await {
+                    let _ = later.send(ServerMsg::Error { message });
+                }
             });
         }
         ClientMsg::Transcribe {

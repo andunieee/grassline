@@ -9,11 +9,15 @@
 //! process. The lines are normalised into [`Event`]s; when the agent asks
 //! before it runs a tool ([`Event::Ask`]), it waits for [`Turn::answer`].
 //! Agents that can take more messages while they work get them with
-//! [`Turn::steer`].
+//! [`Turn::steer`]. The conversations an agent had before can be listed and
+//! read back ([`history`]), to take one up again.
 
 mod acp;
 mod claude;
 mod codex;
+mod history;
+
+pub use history::{Entry, Logged, Past};
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

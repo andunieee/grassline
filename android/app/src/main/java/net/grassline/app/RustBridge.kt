@@ -41,6 +41,11 @@ object RustBridge {
 
     /** Asks for an agent's models; they arrive in [AppState.models]. */
     @JvmStatic external fun models(provider: String)
+    /** Asks for the past sessions of a session's agent in its project; they arrive in [AppState.resumable]. */
+    @JvmStatic external fun resumable(id: String)
+
+    /** Takes up a past session ([PastSession.id]) in session [id], which has no messages yet. */
+    @JvmStatic external fun resume(id: String, conversation: String)
     /** Puts a session in the archive, or takes it out. */
     @JvmStatic external fun archive(id: String, archived: Boolean)
     /** Asks for the archived sessions; they arrive in [AppState.archived]. */

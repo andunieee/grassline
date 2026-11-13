@@ -590,6 +590,12 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     var switchTo by remember { mutableStateOf<String?>(null) }
     var pickingModel by remember { mutableStateOf(false) }
     var permissionsMenu by remember { mutableStateOf(false) }
+    // Picking a past session of the agent to take up, and then waiting for its messages.
+    var pickingPast by remember { mutableStateOf(false) }
+    var resuming by remember { mutableStateOf(false) }
+    LaunchedEffect(state.error) { if (state.error != null) resuming = false }
+    // Nothing was said in it yet: it can take up one of the agent's past sessions instead.
+    val fresh = state.messages[session.id]?.isEmpty() == true && !session.running && session.queue.isEmpty() && voice.phase == VoicePhase.Idle
     val list = rememberLazyListState()
     // The list is laid out top-down, so a reply that streams in grows below what is on screen
     // instead of pushing it up. It only moves on opening, when the user sends, and with its height.
@@ -738,6 +744,26 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize().padding(pad), state = list, contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(messages.size, key = { it }) { Bubble(session.id, messages[it]) }
             if (session.running && !session.waiting) item(key = "running") { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+            if (fresh) {
+                item(key = "resume") {
+                    Column(Modifier.fillMaxWidth().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("No messages yet.", color = MaterialTheme.colorScheme.outline)
+                        if (resuming) {
+                            BusyLabel("Resuming…")
+                        } else {
+                            OutlinedButton({ pickingPast = true }, enabled = state.status == "connected") { Text("Resume a past session") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (pickingPast) {
+        PastSessionPicker(state, session, onDismiss = { pickingPast = false }) {
+            pickingPast = false
+            resuming = true
+            RustBridge.resume(session.id, it)
         }
     }
 
@@ -840,6 +866,35 @@ fun ModelPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, on
                     // A model the agent did not list.
                     val other = if (typed.isNotEmpty() && ' ' !in typed && items.none { it.id == typed }) listOf(PickerItem(typed, "Use “$typed”")) else emptyList()
                     PickerList(entries + other, onPick = onPick)
+                }
+            }
+        },
+    )
+}
+
+/** The latest sessions the session's agent had in its project, newest first; picking one takes it up here. */
+@Composable
+fun PastSessionPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    LaunchedEffect(session.id, session.provider) { RustBridge.resumable(session.id) }
+    val list = state.resumable[session.id]
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Cancel") } },
+        title = { Text("Resume a session") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "The latest ${session.provider} sessions in ${session.project}. The one you pick goes on here, where it left off.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+                )
+                when {
+                    list == null || list.loading -> CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp), strokeWidth = 2.dp)
+                    list.error != null -> Column {
+                        Text(list.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        TextButton({ RustBridge.resumable(session.id) }) { Text("Retry") }
+                    }
+                    list.items.isEmpty() -> Text("${session.provider} has no other sessions here.")
+                    else -> PickerList(list.items.map { PickerItem(it.id, it.title.ifEmpty { "(untitled)" }, ago(it.updated)) }, onPick = onPick)
                 }
             }
         },
