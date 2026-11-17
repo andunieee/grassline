@@ -143,32 +143,3 @@ The admin panel is served by the daemon and is opened with [hyperb](https://gith
 With hyperb installed, open `hyperb://127.0.0.1:7878/`, go to **Access**, press
 **New pairing code**, and scan it with the app. Then add your projects under **Projects** and
 start a session from the phone.
-
-## Releases
-
-Pushing a tag builds and publishes everything:
-
-```
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow builds `grasslined` for Linux (x86_64 and aarch64) and macOS (Apple
-Silicon and Intel). The Linux builds are published as tarballs and as `.deb`, `.rpm` and
-`.pkg.tar.zst` packages; the macOS builds as tarballs. Each archive contains the binary and
-this README, and the Linux ones also contain a systemd user unit. The workflow builds the
-release APK too. All of it is attached to the GitHub release for the tag.
-
-The APK is signed with the debug key unless these repository secrets are set:
-`ANDROID_KEYSTORE_BASE64` (the base64 of a `.jks` file), `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. Builds signed with different keys cannot
-be installed over each other, so keep the same keystore for every release.
-
-For local release builds, the same key is used when it can be found in
-`~/android-release/signing.properties` (`storeFile`, `storePassword`, `keyAlias`,
-`keyPassword`) or in the `ANDROID_KEYSTORE*`/`GRASSLINE_*` environment variables;
-`~/android-release/env.sh` exports the latter. Other local Android projects can read
-that properties file too, so local and CI builds sign with the same key. Override its
-location with `ANDROID_SIGNING_PROPERTIES`. `just android` builds and installs that
-release-signed APK; if a phone still has an install signed with another key (such as
-one of the older debug-signed releases), uninstall `net.grassline.app` once first.
