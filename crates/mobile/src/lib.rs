@@ -57,6 +57,11 @@ struct State {
     /// The past conversations each session could take up, by session id, for
     /// the sessions they were asked for.
     resumable: HashMap<String, Resumables>,
+    /// The files of the directories of the sessions they were asked for, by
+    /// session id.
+    files: HashMap<String, Files>,
+    /// The file each of those sessions is showing, by session id.
+    file: HashMap<String, OpenFile>,
     /// The messages of the sessions that are open.
     messages: HashMap<String, Vec<Message>>,
     /// The last error the daemon reported.
@@ -79,6 +84,23 @@ struct Resumables {
     items: Vec<Resumable>,
     error: Option<String>,
     /// They were asked for and have not arrived yet.
+    loading: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct Files {
+    items: Vec<String>,
+    error: Option<String>,
+    /// They were asked for and have not arrived yet.
+    loading: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct OpenFile {
+    path: String,
+    text: Option<String>,
+    error: Option<String>,
+    /// It was asked for and has not arrived yet.
     loading: bool,
 }
 
@@ -188,6 +210,10 @@ impl Shared {
                 s.resumable.remove(id);
             });
         }
+        self.edit(|s| {
+            s.files.remove(id);
+            s.file.remove(id);
+        });
     }
 }
 
@@ -443,6 +469,43 @@ impl Controller {
         self.send(ClientMsg::Resumable { id: id.into() });
     }
 
+    /// Asks the daemon for the files in the directory of session `id`; they
+    /// show up in the snapshot.
+    pub fn files(&self, id: &str) {
+        self.shared.edit(|s| {
+            let f = s.files.entry(id.into()).or_default();
+            f.loading = true;
+            f.error = None;
+        });
+        self.send(ClientMsg::Files { id: id.into() });
+    }
+
+    /// Asks for the contents of one of those files; session `id` shows it
+    /// from then on, until [`Controller::close_file`].
+    pub fn read_file(&self, id: &str, path: &str) {
+        self.shared.edit(|s| {
+            s.file.insert(
+                id.into(),
+                OpenFile {
+                    path: path.into(),
+                    loading: true,
+                    ..Default::default()
+                },
+            );
+        });
+        self.send(ClientMsg::ReadFile {
+            id: id.into(),
+            path: path.into(),
+        });
+    }
+
+    /// Stops showing the file of session `id`.
+    pub fn close_file(&self, id: &str) {
+        self.shared.edit(|s| {
+            s.file.remove(id);
+        });
+    }
+
     /// Takes up one of those conversations in session `id`, which has no
     /// messages yet; they arrive as its history.
     pub fn resume(&self, id: &str, conversation: &str) {
@@ -534,7 +597,10 @@ impl Controller {
     /// whether each is installed and `steers`), `default_agent`, `models` (by
     /// agent: `items`, `error` and `loading`), `resumable` (by session id, the
     /// past conversations it could take up, each with its `id`, `title` and
-    /// `updated`, as `items`, `error` and `loading`), `sessions` (most recent first,
+    /// `updated`, as `items`, `error` and `loading`), `files` (by session id,
+    /// the paths in its directory as `items`, `error` and `loading`), `file`
+    /// (by session id, the one it shows: `path`, `text`, `error` and
+    /// `loading`), `sessions` (most recent first,
     /// each with its `model`, `permissions` and `queue`), `archived` (the
     /// same, or null until asked for), `transcription` (`provider`, and `url`, `model` and `key`
     /// for a remote endpoint, or just `model` for a local one; null when off), `messages` (by session id; a tool call's `tool` has its
@@ -554,6 +620,8 @@ impl Controller {
         o.insert("default_agent".into(), json!(s.default_agent));
         o.insert("models".into(), json!(s.models));
         o.insert("resumable".into(), json!(s.resumable));
+        o.insert("files".into(), json!(s.files));
+        o.insert("file".into(), json!(s.file));
         o.insert("sessions".into(), json!(s.sessions));
         o.insert("archived".into(), json!(s.archived));
         o.insert("transcription".into(), json!(s.transcription));
@@ -784,6 +852,31 @@ fn apply(shared: &Shared, msg: ServerMsg) {
             if let Some(r) = s.resumable.get_mut(&id) {
                 *r = Resumables {
                     items,
+                    error,
+                    loading: false,
+                };
+            }
+        }
+        ServerMsg::Files { id, items, error } => {
+            if let Some(f) = s.files.get_mut(&id) {
+                *f = Files {
+                    items,
+                    error,
+                    loading: false,
+                };
+            }
+        }
+        ServerMsg::File {
+            id,
+            path,
+            text,
+            error,
+        } => {
+            // Unless another file was picked or it was closed meanwhile.
+            if let Some(f) = s.file.get_mut(&id).filter(|f| f.path == path) {
+                *f = OpenFile {
+                    path,
+                    text,
                     error,
                     loading: false,
                 };

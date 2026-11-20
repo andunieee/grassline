@@ -44,6 +44,13 @@ object RustBridge {
     /** Asks for the past sessions of a session's agent in its project; they arrive in [AppState.resumable]. */
     @JvmStatic external fun resumable(id: String)
 
+    /** Asks for the files in a session's directory; they arrive in [AppState.files]. */
+    @JvmStatic external fun files(id: String)
+    /** Asks for a file of that list ([path] as listed); the session shows it from then on, in [AppState.file]. */
+    @JvmStatic external fun readFile(id: String, path: String)
+    /** Stops showing the session's file. */
+    @JvmStatic external fun closeFile(id: String)
+
     /** Takes up a past session ([PastSession.id]) in session [id], which has no messages yet. */
     @JvmStatic external fun resume(id: String, conversation: String)
     /** Puts a session in the archive, or takes it out. */

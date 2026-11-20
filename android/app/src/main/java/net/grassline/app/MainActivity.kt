@@ -593,6 +593,8 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
     // Picking a past session of the agent to take up, and then waiting for its messages.
     var pickingPast by remember { mutableStateOf(false) }
     var resuming by remember { mutableStateOf(false) }
+    var topMenu by remember { mutableStateOf(false) }
+    var pickingFile by remember { mutableStateOf(false) }
     LaunchedEffect(state.error) { if (state.error != null) resuming = false }
     // Nothing was said in it yet: it can take up one of the agent's past sessions instead.
     val fresh = state.messages[session.id]?.isEmpty() == true && !session.running && session.queue.isEmpty() && voice.phase == VoicePhase.Idle
@@ -635,6 +637,18 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
                 TopAppBar(
                     title = { Text(session.project) },
                     navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                    actions = {
+                        Box {
+                            IconButton({ topMenu = true }) { Icon(Icons.Filled.MoreVert, "Menu") }
+                            DropdownMenu(topMenu, { topMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Open file") },
+                                    enabled = state.status == "connected",
+                                    onClick = { topMenu = false; pickingFile = true },
+                                )
+                            }
+                        }
+                    },
                 )
                 // What the next message runs with.
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -759,6 +773,19 @@ fun ChatScreen(state: AppState, session: SessionInfo, onBack: () -> Unit) {
         }
     }
 
+    if (pickingFile) {
+        FilePicker(state, session, onDismiss = { pickingFile = false }) {
+            pickingFile = false
+            RustBridge.readFile(session.id, it)
+        }
+    }
+
+    // On top of the chat; back closes it.
+    state.file[session.id]?.let {
+        BackHandler { RustBridge.closeFile(session.id) }
+        FileScreen(it) { RustBridge.closeFile(session.id) }
+    }
+
     if (pickingPast) {
         PastSessionPicker(state, session, onDismiss = { pickingPast = false }) {
             pickingPast = false
@@ -870,6 +897,63 @@ fun ModelPicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, on
             }
         },
     )
+}
+
+/** The files in the session's project, filtered by what is typed: every word must appear in the path. */
+@Composable
+fun FilePicker(state: AppState, session: SessionInfo, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    LaunchedEffect(session.id) { RustBridge.files(session.id) }
+    val list = state.files[session.id]
+    var query by remember { mutableStateOf("") }
+    val shown = remember(list, query) { list?.items.orEmpty().filter { matches(query, it) } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Cancel") } },
+        title = { Text("Open a file") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FilterField(query) { query = it }
+                when {
+                    list == null || list.loading -> CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp), strokeWidth = 2.dp)
+                    list.error != null -> Column {
+                        Text(list.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        TextButton({ RustBridge.files(session.id) }) { Text("Retry") }
+                    }
+                    else -> PickerList(shown.map { PickerItem(it, it.substringAfterLast('/'), it.substringBeforeLast('/', "").ifEmpty { null }) }, onPick = onPick)
+                }
+            }
+        },
+    )
+}
+
+/** A file's text in full, over the chat. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FileScreen(file: OpenFile, onBack: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(file.path, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium) },
+                navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            )
+        },
+    ) { pad ->
+        Box(Modifier.fillMaxSize().padding(pad)) {
+            when {
+                file.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
+                file.error != null -> Text(file.error, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+                else -> {
+                    val lines = remember(file.text) { file.text.orEmpty().split('\n') }
+                    SelectionContainer {
+                        // Lines are not wrapped; the whole file scrolls sideways.
+                        LazyColumn(Modifier.fillMaxSize().horizontalScroll(rememberScrollState()), contentPadding = PaddingValues(12.dp)) {
+                            items(lines.size) { Text(lines[it].ifEmpty { " " }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, softWrap = false) }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** The latest sessions the session's agent had in its project, newest first; picking one takes it up here. */

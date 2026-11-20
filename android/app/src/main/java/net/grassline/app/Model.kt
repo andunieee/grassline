@@ -25,6 +25,12 @@ data class PastSession(val id: String, val title: String, val updated: Long)
 /** The past sessions a session could take up, once asked for with [RustBridge.resumable]. */
 data class PastSessions(val items: List<PastSession>, val error: String?, val loading: Boolean)
 
+/** The files in a session's directory, once asked for with [RustBridge.files]; paths relative to it. */
+data class FileList(val items: List<String>, val error: String?, val loading: Boolean)
+
+/** The file a session shows, once asked for with [RustBridge.readFile]; exactly one of [text] and [error] is set when it is not [loading]. */
+data class OpenFile(val path: String, val text: String?, val error: String?, val loading: Boolean)
+
 /** A message waiting for the agent's turn to end; [steering] once the agent was given it but has not taken it in yet. */
 data class Queued(val id: String, val text: String, val steering: Boolean)
 
@@ -128,6 +134,10 @@ data class AppState(
     val models: Map<String, ModelList> = emptyMap(),
     /** By session id; only the ones asked for. */
     val resumable: Map<String, PastSessions> = emptyMap(),
+    /** By session id; only the ones asked for. */
+    val files: Map<String, FileList> = emptyMap(),
+    /** By session id; the sessions that show a file. */
+    val file: Map<String, OpenFile> = emptyMap(),
     /** Most recent first; not the archived ones. */
     val sessions: List<SessionInfo> = emptyList(),
     /** The archived sessions, most recent first; null until asked for with [RustBridge.archived]. */
@@ -178,6 +188,19 @@ data class AppState(
                             l.optStringOrNull("error"),
                             l.optBoolean("loading"),
                         )
+                    }
+                } ?: emptyMap(),
+                files = o.optJSONObject("files")?.let { f ->
+                    f.keys().asSequence().associateWith { k ->
+                        val l = f.getJSONObject(k)
+                        val items = l.optJSONArray("items")
+                        FileList(List(items?.length() ?: 0) { items!!.getString(it) }, l.optStringOrNull("error"), l.optBoolean("loading"))
+                    }
+                } ?: emptyMap(),
+                file = o.optJSONObject("file")?.let { f ->
+                    f.keys().asSequence().associateWith { k ->
+                        val l = f.getJSONObject(k)
+                        OpenFile(l.getString("path"), l.optStringOrNull("text"), l.optStringOrNull("error"), l.optBoolean("loading"))
                     }
                 } ?: emptyMap(),
                 sessions = o.getJSONArray("sessions").map(::parseSession),

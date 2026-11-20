@@ -5,7 +5,7 @@ use crate::local_speech::LocalSpeech;
 use grassline_agents::{Answer, Entry, Event, Logged, Provider, Turn};
 use grassline_proto::{
     Agent, Ask, Choice, Decision, Message, Model, Permissions, Project, Question, Queued,
-    Resumable, Role, SessionInfo, ToolCall, ToolStatus, RESUMABLE_MAX,
+    Resumable, Role, SessionInfo, ToolCall, ToolStatus, FILES_MAX, FILE_MAX, RESUMABLE_MAX,
 };
 
 /// The requests the agent waits for: the tool call's message index, and the
@@ -589,6 +589,67 @@ impl Core {
         let _ = self.updates.send(Update::History(id.into()));
         let _ = self.updates.send(Update::Session(info));
         Ok(())
+    }
+
+    /// The files in the directory of session `id`, as paths relative to it:
+    /// the ones git tracks or does not ignore when it is a repository,
+    /// otherwise all but hidden ones and the usual build directories.
+    pub async fn files(&self, id: &str) -> Result<Vec<String>, String> {
+        let (_, dir) = self.agent_of(id)?;
+        let git = tokio::process::Command::new("git")
+            .args([
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ])
+            .current_dir(&dir)
+            .output()
+            .await;
+        let mut files: Vec<String> = match git {
+            Ok(out) if out.status.success() => out
+                .stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect(),
+            _ => tokio::task::spawn_blocking(move || walk(&dir))
+                .await
+                .map_err(|e| e.to_string())??,
+        };
+        files.sort();
+        files.dedup();
+        files.truncate(FILES_MAX);
+        Ok(files)
+    }
+
+    /// The contents of `path`, relative to the directory of session `id`.
+    pub async fn read_file(&self, id: &str, path: &str) -> Result<String, String> {
+        let (_, dir) = self.agent_of(id)?;
+        let root = tokio::fs::canonicalize(&dir)
+            .await
+            .map_err(|e| format!("could not open the directory: {e}"))?;
+        let file = tokio::fs::canonicalize(root.join(path))
+            .await
+            .map_err(|e| format!("could not open {path}: {e}"))?;
+        // Not through `..` or a link out of the directory.
+        if !file.starts_with(&root) {
+            return Err("that file is outside the project".into());
+        }
+        let meta = tokio::fs::metadata(&file)
+            .await
+            .map_err(|e| format!("could not read {path}: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("{path} is not a file"));
+        }
+        if meta.len() > FILE_MAX as u64 {
+            return Err(format!("{path} is too large to show"));
+        }
+        let bytes = tokio::fs::read(&file)
+            .await
+            .map_err(|e| format!("could not read {path}: {e}"))?;
+        String::from_utf8(bytes).map_err(|_| format!("{path} is not text"))
     }
 
     /// The agent of session `id` and its directory.
@@ -1240,6 +1301,44 @@ fn settle_tools(messages: &mut [Message]) -> Vec<usize> {
         }
     }
     out
+}
+
+/// The files under `dir` as relative paths, without hidden ones or the
+/// directories that only hold dependencies and build output.
+fn walk(dir: &Path) -> Result<Vec<String>, String> {
+    let mut out = vec![];
+    let mut todo = vec![PathBuf::new()];
+    while let Some(rel) = todo.pop() {
+        let entries = match std::fs::read_dir(dir.join(&rel)) {
+            Ok(e) => e,
+            Err(e) if rel.as_os_str().is_empty() => {
+                return Err(format!("could not list the files: {e}"))
+            }
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if name.starts_with('.')
+                || (kind.is_dir()
+                    && matches!(name.as_str(), "node_modules" | "target" | "build" | "dist"))
+            {
+                continue;
+            }
+            let path = rel.join(&name);
+            if kind.is_dir() {
+                todo.push(path);
+            } else if kind.is_file() {
+                out.push(path.to_string_lossy().into_owned());
+            }
+            if out.len() >= FILES_MAX {
+                return Ok(out);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The messages of a past conversation: the agent's text runs together until

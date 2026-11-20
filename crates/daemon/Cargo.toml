@@ -19,7 +19,7 @@ serde_json.workspace = true
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 iroh.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "process"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.2"
 hex = "0.4"

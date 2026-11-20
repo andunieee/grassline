@@ -190,6 +190,31 @@ async fn handle(
                 let _ = later.send(ServerMsg::Resumable { id, items, error });
             });
         }
+        ClientMsg::Files { id } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                let (items, error) = match core.files(&id).await {
+                    Ok(items) => (items, None),
+                    Err(e) => (vec![], Some(e)),
+                };
+                let _ = later.send(ServerMsg::Files { id, items, error });
+            });
+        }
+        ClientMsg::ReadFile { id, path } => {
+            let (core, later) = (core.clone(), later.clone());
+            tokio::spawn(async move {
+                let (text, error) = match core.read_file(&id, &path).await {
+                    Ok(text) => (Some(text), None),
+                    Err(e) => (None, Some(e)),
+                };
+                let _ = later.send(ServerMsg::File {
+                    id,
+                    path,
+                    text,
+                    error,
+                });
+            });
+        }
         // The new history goes to whoever has the session open.
         ClientMsg::Resume { id, conversation } => {
             let (core, later) = (core.clone(), later.clone());

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 /// The version of the protocol, in its ALPN. Bump it whenever a message
 /// changes: the daemon then tells controllers of older versions to update.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 /// The code the daemon closes a connection of an older version with; the
 /// reason is its own [`VERSION`].
@@ -231,6 +231,12 @@ pub struct Resumable {
 /// How many [`Resumable`] conversations the daemon offers, the newest.
 pub const RESUMABLE_MAX: usize = 5;
 
+/// The most files [`ServerMsg::Files`] lists.
+pub const FILES_MAX: usize = 20_000;
+
+/// The largest file [`ServerMsg::File`] sends, in bytes.
+pub const FILE_MAX: usize = 4 << 20;
+
 /// A message waiting for the agent to finish its turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queued {
@@ -360,6 +366,17 @@ pub enum ClientMsg {
         id: String,
         conversation: String,
     },
+    /// Asks for the files in the directory of session `id`; answered with
+    /// [`ServerMsg::Files`].
+    Files {
+        id: String,
+    },
+    /// Asks for the contents of a file of that directory, by its path as
+    /// listed in [`ServerMsg::Files`]; answered with [`ServerMsg::File`].
+    ReadFile {
+        id: String,
+        path: String,
+    },
     /// Starts receiving the messages of a session; it is read from then on.
     Open {
         id: String,
@@ -449,6 +466,22 @@ pub enum ServerMsg {
     Resumable {
         id: String,
         items: Vec<Resumable>,
+        error: Option<String>,
+    },
+    /// The answer to a [`ClientMsg::Files`]: the paths relative to the
+    /// session's directory, at most [`FILES_MAX`], or why they could not be
+    /// listed.
+    Files {
+        id: String,
+        items: Vec<String>,
+        error: Option<String>,
+    },
+    /// The answer to a [`ClientMsg::ReadFile`]: the whole file as text (at most
+    /// [`FILE_MAX`] bytes), or why it could not be read.
+    File {
+        id: String,
+        path: String,
+        text: Option<String>,
         error: Option<String>,
     },
     /// One session changed or was created; it may have gone in or out of the
