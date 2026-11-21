@@ -12,7 +12,8 @@ daemon *args:
 # Install the daemon for this user and enable it as a systemd user service
 daemon-install:
     cargo install --path crates/daemon --locked
-    install -Dm644 deploy/grasslined.service ~/.config/systemd/user/grasslined.service
+    mkdir -p ~/.config/systemd/user
+    sed "s|@BIN@|${CARGO_HOME:-$HOME/.cargo}/bin/grasslined|" deploy/grasslined.service > ~/.config/systemd/user/grasslined.service
     systemctl --user daemon-reload
     systemctl --user enable grasslined
     systemctl --user restart grasslined

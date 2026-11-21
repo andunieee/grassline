@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$CARGO_HOME/bin/grasslined
+ExecStart=@BIN@
 Restart=on-failure
 RestartSec=3
 # Agents are found through PATH: add the directories of claude, opencode and codex.
