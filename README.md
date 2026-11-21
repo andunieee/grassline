@@ -79,7 +79,8 @@ systemctl --user enable --now grasslined
 
 ```bash
 v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
-sudo dnf install "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1.$(uname -m).rpm"
+curl -fLO "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1.$(uname -m).rpm"
+sudo dnf install "./grasslined-$v-1.$(uname -m).rpm"   # openSUSE: sudo zypper --no-gpg-checks install "./grasslined-$v-1.$(uname -m).rpm"
 systemctl --user daemon-reload
 systemctl --user enable --now grasslined
 ```
@@ -91,7 +92,8 @@ systemctl --user enable --now grasslined
 
 ```bash
 v=$(curl -fsSL https://api.github.com/repos/andunieee/grassline/releases/latest | grep -Po '"tag_name": *"v\K[^"]+')
-sudo pacman -U "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1-$(uname -m).pkg.tar.zst"
+curl -fLO "https://github.com/andunieee/grassline/releases/download/v$v/grasslined-$v-1-$(uname -m).pkg.tar.zst"
+sudo pacman -U "./grasslined-$v-1-$(uname -m).pkg.tar.zst"
 systemctl --user daemon-reload
 systemctl --user enable --now grasslined
 ```

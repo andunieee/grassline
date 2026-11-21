@@ -114,7 +114,8 @@ jobs:
           Homepage: https://github.com/andunieee/grassline
           Description: Headless daemon for controlling coding agents remotely
           EOF
-          dpkg-deb --build --root-owner-group "$deb_root" \
+          chmod 755 "$deb_root"
+          dpkg-deb -Zxz --build --root-owner-group "$deb_root" \
             "dist/grasslined_${version}_${{ matrix.deb_arch }}.deb"
           rm -rf "$deb_root"
 
@@ -131,6 +132,7 @@ jobs:
           AutoReqProv: no
           %global debug_package %{nil}
           %global __os_install_post %{nil}
+          %global _build_id_links none
 
           %description
           Grassline runs Claude Code, opencode, Codex and others on your own computer
