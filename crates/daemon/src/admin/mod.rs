@@ -22,6 +22,21 @@ fn set_status(s: String) {
     *HTTP_STATUS.lock().unwrap() = s;
 }
 
+/// Binds `addr`, moving to the next ports while the one asked for is taken.
+async fn bind_free(addr: &str) -> std::io::Result<tokio::net::TcpListener> {
+    let Ok(mut sock) = addr.parse::<std::net::SocketAddr>() else {
+        return tokio::net::TcpListener::bind(addr).await;
+    };
+    loop {
+        match tokio::net::TcpListener::bind(sock).await {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && sock.port() < u16::MAX => {
+                sock.set_port(sock.port() + 1);
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Keeps the HTTP listener matching the settings.
 pub async fn supervise_http(core: Arc<Core>) {
     let mut changes = core.watch_config();
@@ -36,8 +51,11 @@ pub async fn supervise_http(core: Arc<Core>) {
             }
             (false, None) => set_status("off".into()),
             (true, h) if h == Some(want.addr.as_str()) => {}
-            (true, _) => match tokio::net::TcpListener::bind(&want.addr).await {
+            (true, _) => match bind_free(&want.addr).await {
                 Ok(listener) => {
+                    let bound = listener
+                        .local_addr()
+                        .map_or_else(|_| want.addr.clone(), |a| a.to_string());
                     if let Some((_, old)) = current.take() {
                         old.abort();
                     }
@@ -48,8 +66,11 @@ pub async fn supervise_http(core: Arc<Core>) {
                             eprintln!("admin http: {e}");
                         }
                     });
-                    println!("admin interface on hyperb://{}/", want.addr);
-                    set_status(format!("listening on {}", want.addr));
+                    println!("admin interface on hyperb://{bound}/");
+                    set_status(match bound == want.addr {
+                        true => format!("listening on {bound}"),
+                        false => format!("listening on {bound} ({} is in use)", want.addr),
+                    });
                     current = Some((want.addr.clone(), task));
                 }
                 Err(e) => {
