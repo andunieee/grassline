@@ -51,7 +51,7 @@ live, and the Android app. Both are attached to every
 On Linux the daemon runs as a systemd user service. The packages install a unit in
 `/usr/lib/systemd/user/` that starts `/usr/bin/grasslined`, and the Linux tarballs include one
 that starts `~/.local/bin/grasslined`. `just daemon-install` uses
-[`deploy/grasslined.service`](deploy/grasslined.service) for a `cargo install`. On macOS there
+[`deploy/grasslined.service.template`](deploy/grasslined.service.template) for a `cargo install`. On macOS there
 is no systemd: extract the tarball and run `grasslined` directly.
 
 Once the daemon is running, install the app on your phone, open the admin panel and pair them.

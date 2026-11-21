@@ -13,7 +13,7 @@ daemon *args:
 daemon-install:
     cargo install --path crates/daemon --locked
     mkdir -p ~/.config/systemd/user
-    sed "s|@BIN@|${CARGO_HOME:-$HOME/.cargo}/bin/grasslined|" deploy/grasslined.service > ~/.config/systemd/user/grasslined.service
+    sed "s|@BIN@|${CARGO_HOME:-$HOME/.cargo}/bin/grasslined|" deploy/grasslined.service.template > ~/.config/systemd/user/grasslined.service
     systemctl --user daemon-reload
     systemctl --user enable grasslined
     systemctl --user restart grasslined
