@@ -26,6 +26,11 @@ struct Args {
     /// Where settings and the iroh key live (default ~/.config/grassline)
     #[arg(long, value_name = "DIR")]
     config_dir: Option<PathBuf>,
+
+    /// Serve the admin interface on this exact port for this run, failing if it is taken
+    /// (by default the saved address is used, moving to the next port when it is busy)
+    #[arg(long, value_name = "PORT")]
+    port: Option<u16>,
 }
 
 #[tokio::main]
@@ -50,7 +55,7 @@ async fn main() {
     };
     admin::install(core.clone());
     tokio::spawn(iroh::serve(core.clone(), identity));
-    tokio::spawn(admin::supervise_http(core.clone()));
+    tokio::spawn(admin::supervise_http(core.clone(), args.port));
     let _ = tokio::signal::ctrl_c().await;
     println!("bye");
 }

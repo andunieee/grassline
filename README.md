@@ -145,3 +145,7 @@ The admin panel is served by the daemon and is opened with [hyperb](https://gith
 With hyperb installed, open `hyperb://127.0.0.1:7878/`, go to **Access**, press
 **New pairing code**, and scan it with the app. Then add your projects under **Projects** and
 start a session from the phone.
+
+If port 7878 is taken the daemon uses the next free one (the address is printed in its log and
+shown in the panel). To pick the port yourself, change it under **Access** or start the daemon
+with `grasslined --port 9000`, which uses exactly that port and fails if it is busy.
